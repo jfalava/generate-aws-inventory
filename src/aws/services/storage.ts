@@ -1,4 +1,20 @@
-import { $ } from "bun";
+import {
+  ListBucketsCommand,
+  GetBucketLocationCommand,
+  GetPublicAccessBlockCommand,
+  GetBucketEncryptionCommand,
+  GetBucketVersioningCommand,
+  GetBucketTaggingCommand,
+} from "@aws-sdk/client-s3";
+import { DescribeVolumesCommand } from "@aws-sdk/client-ec2";
+import {
+  DescribeFileSystemsCommand,
+  type FileSystemDescription,
+} from "@aws-sdk/client-efs";
+import {
+  ListBackupVaultsCommand,
+  type BackupVaultListMember,
+} from "@aws-sdk/client-backup";
 import type {
   S3Bucket,
   EBSVolume,
@@ -6,33 +22,69 @@ import type {
   BackupVault,
 } from "../aws-cli.types";
 import { getLog } from "./utils";
+import {
+  getS3Client,
+  getEC2Client,
+  getEFSClient,
+  getBackupClient,
+} from "../sdk-clients";
+import { executeWithRetry } from "../sdk-error-handler";
 
 export async function describeS3(): Promise<S3Bucket[]> {
   const { verbose } = getLog();
 
-  const result = await $`aws s3api list-buckets --output json`.text();
-  const data = JSON.parse(result);
+  // S3 is global, so we can use any region for listing buckets
+  const client = getS3Client("us-east-1");
+
+  const data = await executeWithRetry(
+    async () => {
+      const command = new ListBucketsCommand({});
+      return await client.send(command);
+    },
+    "S3 List",
+    3,
+    1000,
+  );
 
   const buckets: S3Bucket[] = [];
 
+  // Process each bucket to get additional details
   for (const bucket of data.Buckets || []) {
+    if (!bucket.Name) continue;
+
     let region: string | undefined;
     let publicAccess: boolean | undefined;
     let encrypted: boolean | undefined;
     let versioningEnabled: boolean | undefined;
     const tags: Record<string, string> = {};
 
+    // Get bucket region
     try {
-      const locationResult =
-        await $`aws s3api get-bucket-location --bucket ${bucket.Name} --output json`.text();
-      const locationData = JSON.parse(locationResult);
+      const locationData = await executeWithRetry(
+        async () => {
+          const command = new GetBucketLocationCommand({ Bucket: bucket.Name });
+          return await client.send(command);
+        },
+        "S3 GetBucketLocation",
+        2,
+        500,
+      );
       region = locationData.LocationConstraint || "us-east-1";
     } catch {}
 
+    // Get public access block configuration
     try {
-      const publicAccessResult =
-        await $`aws s3api get-public-access-block --bucket ${bucket.Name} --output json`.text();
-      const publicAccessData = JSON.parse(publicAccessResult);
+      const publicAccessData = await executeWithRetry(
+        async () => {
+          const command = new GetPublicAccessBlockCommand({
+            Bucket: bucket.Name,
+          });
+          return await client.send(command);
+        },
+        "S3 GetPublicAccessBlock",
+        2,
+        500,
+      );
       const block = publicAccessData.PublicAccessBlockConfiguration;
       publicAccess = !(
         block?.BlockPublicAcls &&
@@ -44,36 +96,65 @@ export async function describeS3(): Promise<S3Bucket[]> {
       publicAccess = true;
     }
 
+    // Check for encryption
     try {
-      await $`aws s3api get-bucket-encryption --bucket ${bucket.Name} --output json`.text();
+      await executeWithRetry(
+        async () => {
+          const command = new GetBucketEncryptionCommand({
+            Bucket: bucket.Name,
+          });
+          return await client.send(command);
+        },
+        "S3 GetBucketEncryption",
+        2,
+        500,
+      );
       encrypted = true;
     } catch {
       encrypted = false;
     }
 
+    // Get versioning status
     try {
-      const versioningResult =
-        await $`aws s3api get-bucket-versioning --bucket ${bucket.Name} --output json`.text();
-      const versioningData = JSON.parse(versioningResult);
+      const versioningData = await executeWithRetry(
+        async () => {
+          const command = new GetBucketVersioningCommand({
+            Bucket: bucket.Name,
+          });
+          return await client.send(command);
+        },
+        "S3 GetBucketVersioning",
+        2,
+        500,
+      );
       versioningEnabled = versioningData.Status === "Enabled";
     } catch {
       versioningEnabled = false;
     }
 
+    // Get bucket tags
     try {
-      const tagsResult =
-        await $`aws s3api get-bucket-tagging --bucket ${bucket.Name} --output json`.text();
-      const tagsData = JSON.parse(tagsResult);
+      const tagsData = await executeWithRetry(
+        async () => {
+          const command = new GetBucketTaggingCommand({ Bucket: bucket.Name });
+          return await client.send(command);
+        },
+        "S3 GetBucketTagging",
+        2,
+        500,
+      );
       if (tagsData.TagSet) {
         for (const tag of tagsData.TagSet) {
-          tags[tag.Key] = tag.Value;
+          if (tag.Key && tag.Value) {
+            tags[tag.Key] = tag.Value;
+          }
         }
       }
     } catch {}
 
     buckets.push({
       name: bucket.Name,
-      creationDate: bucket.CreationDate,
+      creationDate: bucket.CreationDate?.toISOString() || "N/A",
       region,
       publicAccess,
       encrypted,
@@ -94,37 +175,55 @@ export async function describeS3(): Promise<S3Bucket[]> {
  */
 export async function describeEBSVolumes(region: string): Promise<EBSVolume[]> {
   const { verbose } = getLog();
-
-  const result =
-    await $`aws ec2 describe-volumes --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getEC2Client(region);
 
   const volumes: EBSVolume[] = [];
 
-  for (const volume of data.Volumes || []) {
-    const name =
-      volume.Tags?.find((tag: any) => tag.Key === "Name")?.Value || "N/A";
+  // Use pagination to get all volumes
+  let nextToken: string | undefined = undefined;
 
-    const tags: Record<string, string> = {};
-    if (volume.Tags) {
-      for (const tag of volume.Tags) {
-        tags[tag.Key] = tag.Value;
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new DescribeVolumesCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "EBS",
+      3,
+      1000,
+    );
+
+    for (const volume of data.Volumes || []) {
+      const name =
+        volume.Tags?.find((tag) => tag.Key === "Name")?.Value || "N/A";
+
+      const tags: Record<string, string> = {};
+      if (volume.Tags) {
+        for (const tag of volume.Tags) {
+          if (tag.Key && tag.Value) {
+            tags[tag.Key] = tag.Value;
+          }
+        }
       }
+
+      volumes.push({
+        volumeId: volume.VolumeId || "unknown",
+        name,
+        size: volume.Size || 0,
+        volumeType: volume.VolumeType || "unknown",
+        state: volume.State || "unknown",
+        encrypted: volume.Encrypted || false,
+        availabilityZone: volume.AvailabilityZone || "unknown",
+        createTime: volume.CreateTime?.toISOString() || "N/A",
+        attachments: volume.Attachments || [],
+        tags,
+      });
     }
 
-    volumes.push({
-      volumeId: volume.VolumeId,
-      name,
-      size: volume.Size,
-      volumeType: volume.VolumeType,
-      state: volume.State,
-      encrypted: volume.Encrypted || false,
-      availabilityZone: volume.AvailabilityZone,
-      createTime: volume.CreateTime,
-      attachments: volume.Attachments,
-      tags,
-    });
-  }
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return volumes;
 }
@@ -140,34 +239,52 @@ export async function describeEFSFileSystems(
   region: string,
 ): Promise<EFSFileSystem[]> {
   const { verbose } = getLog();
-
-  const result =
-    await $`aws efs describe-file-systems --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getEFSClient(region);
 
   const fileSystems: EFSFileSystem[] = [];
 
-  for (const fs of data.FileSystems || []) {
-    const name = fs.Name || fs.FileSystemId;
+  // Use pagination to get all file systems
+  let marker: string | undefined = undefined;
 
-    const tags: Record<string, string> = {};
-    if (fs.Tags) {
-      for (const tag of fs.Tags) {
-        tags[tag.Key] = tag.Value;
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new DescribeFileSystemsCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "EFS",
+      3,
+      1000,
+    );
+
+    for (const fs of data.FileSystems || []) {
+      const name = fs.Name || fs.FileSystemId || "unknown";
+
+      const tags: Record<string, string> = {};
+      if (fs.Tags) {
+        for (const tag of fs.Tags) {
+          if (tag.Key && tag.Value) {
+            tags[tag.Key] = tag.Value;
+          }
+        }
       }
+
+      fileSystems.push({
+        fileSystemId: fs.FileSystemId || "unknown",
+        name,
+        lifeCycleState: fs.LifeCycleState || "unknown",
+        sizeInBytes: fs.SizeInBytes?.Value,
+        creationTime: fs.CreationTime?.toISOString() || "N/A",
+        encrypted: fs.Encrypted || false,
+        performanceMode: fs.PerformanceMode || "unknown",
+        tags,
+      });
     }
 
-    fileSystems.push({
-      fileSystemId: fs.FileSystemId,
-      name,
-      lifeCycleState: fs.LifeCycleState,
-      sizeInBytes: fs.SizeInBytes?.Value,
-      creationTime: fs.CreationTime,
-      encrypted: fs.Encrypted || false,
-      performanceMode: fs.PerformanceMode,
-      tags,
-    });
-  }
+    marker = data.NextMarker;
+  } while (marker);
 
   return fileSystems;
 }
@@ -183,23 +300,39 @@ export async function describeBackupVaults(
   region: string,
 ): Promise<BackupVault[]> {
   const { verbose } = getLog();
-
-  const result =
-    await $`aws backup list-backup-vaults --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getBackupClient(region);
 
   const vaults: BackupVault[] = [];
 
-  for (const vault of data.BackupVaultList || []) {
-    vaults.push({
-      backupVaultName: vault.BackupVaultName,
-      backupVaultArn: vault.BackupVaultArn,
-      creationDate: vault.CreationDate,
-      encryptionKeyArn: vault.EncryptionKeyArn,
-      numberOfRecoveryPoints: vault.NumberOfRecoveryPoints,
-      locked: vault.Locked,
-    });
-  }
+  // Use pagination to get all vaults
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListBackupVaultsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Backup",
+      3,
+      1000,
+    );
+
+    for (const vault of data.BackupVaultList || []) {
+      vaults.push({
+        backupVaultName: vault.BackupVaultName || "unknown",
+        backupVaultArn: vault.BackupVaultArn || "unknown",
+        creationDate: vault.CreationDate?.toISOString() || "N/A",
+        encryptionKeyArn: vault.EncryptionKeyArn,
+        numberOfRecoveryPoints: vault.NumberOfRecoveryPoints || 0,
+        locked: vault.Locked || false,
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return vaults;
 }

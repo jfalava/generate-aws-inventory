@@ -137,6 +137,20 @@ const parsedArgsSchema = z.object({
   "init-detailed": z.boolean(),
   "init-security": z.boolean(),
   "init-cost": z.boolean(),
+  "export-format": z.string(),
+  "limit-regions": z
+    .string()
+    .optional()
+    .refine(
+      (val: string | undefined) => {
+        if (!val) return true;
+        const regions = val.split(",").map((r: string) => r.trim());
+        return regions.every((r: string) => validRegions.includes(r));
+      },
+      {
+        message: `Invalid region(s) in --limit-regions. Must be comma-separated list of valid AWS regions (e.g., us-east-1,us-west-2)`,
+      },
+    ),
 });
 
 /**

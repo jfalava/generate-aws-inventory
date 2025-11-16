@@ -87,7 +87,6 @@ import {
   generateInitInventory,
   type InventoryMode,
 } from "./aws/init-inventory";
-import { checkAwsCliOrExit } from "./lib/aws-cli-check";
 import {
   parseCliArgs,
   printHelp,
@@ -101,6 +100,7 @@ import { parseJsonToAccounts, type AccountConfig } from "./parsers/json-parser";
 import { validateAwsProfile } from "./lib/aws-profile";
 import ProgressBar from "progress";
 import { color, getServiceColor } from "./lib/colors";
+import { writeInventoryFile } from "./lib/spreadsheet";
 
 const values: ParsedArgs = parseCliArgs(Bun.argv.slice(2));
 validateParsedArgs(values);
@@ -125,6 +125,22 @@ if (
   printHelp();
 }
 
+/**
+ * Obtains temporary AWS credentials using the letme CLI tool with MFA authentication.
+ * Sets the AWS_PROFILE environment variable to use the obtained credentials.
+ *
+ * @param accountName - AWS account name or identifier registered with letme
+ * @param mfaToken - TOTP MFA token generated from stored secret
+ * @param log - Logging function for status messages
+ * @throws Error if letme command fails or returns non-zero exit code
+ *
+ * @example
+ * ```typescript
+ * await obtainAWSCredentials('production', '123456', console.log);
+ * // Credentials obtained successfully
+ * // process.env.AWS_PROFILE === 'production'
+ * ```
+ */
 async function obtainAWSCredentials(
   accountName: string,
   mfaToken: string,
@@ -137,7 +153,6 @@ async function obtainAWSCredentials(
       await $`letme obtain ${accountName} --inline-mfa ${mfaToken}`.quiet();
 
     if (result.exitCode === 0) {
-      // Set the AWS profile to use the obtained credentials
       process.env.AWS_PROFILE = accountName;
       log("Credentials obtained successfully");
       return;
@@ -151,14 +166,33 @@ async function obtainAWSCredentials(
   }
 }
 
+/**
+ * Main application orchestrator for AWS inventory generation.
+ *
+ * Handles all CLI modes:
+ * - TOTP setup mode: Configures MFA secrets for letme authentication
+ * - Describe mode: Generates detailed markdown descriptions from inventory CSVs
+ * - Describe-harder mode: Generates comprehensive descriptions with structured tables
+ * - Init modes: Creates consolidated cross-region inventories (basic/detailed/security/cost)
+ * - Standard inventory: Queries specific services in specified accounts and regions
+ *
+ * Authentication flow:
+ * 1. letme with MFA: Uses `--use-letme` flag to obtain temporary credentials
+ * 2. AWS profiles: Uses `--account` flag to reference profiles in ~/.aws/config
+ * 3. Default credentials: Falls back to default AWS credential chain
+ *
+ * Output:
+ * - Creates CSV/XLSX files per service in inventory-output directory
+ * - Supports filtering by services with `--services` parameter
+ * - Handles multiple accounts and regions with error recovery
+ *
+ * @throws Error for credential failures, network errors, or service query failures
+ */
 async function main() {
   try {
     const log = !values.silent ? console.log : () => {};
 
     setLog(log, !values.silent);
-
-    // Check if AWS CLI is installed before proceeding with any AWS operations
-    await checkAwsCliOrExit();
 
     if (values["setup-totp"]) {
       await setupTOTP(log);
@@ -260,7 +294,37 @@ async function main() {
         }
       }
 
-      await generateInitInventory(accountId, mode, values.silent);
+      // Parse limit-regions if provided
+      const limitRegions = values["limit-regions"]
+        ? values["limit-regions"].split(",").map((r) => r.trim())
+        : undefined;
+
+      // Warn if no limit-regions is specified
+      if (!limitRegions) {
+        console.warn(
+          color.warning(
+            "\nWarning: Running init inventory across ALL enabled regions without --limit-regions.",
+          ),
+        );
+        console.warn(
+          color.warning(
+            "This can take a very long time and may result in AWS API rate limit errors.",
+          ),
+        );
+        console.warn(
+          color.muted(
+            `Consider using ${color.yellow("--limit-regions us-east-1,us-west-2")} to scan specific regions only.\n`,
+          ),
+        );
+      }
+
+      await generateInitInventory(
+        accountId,
+        mode,
+        values.silent,
+        values["export-format"],
+        limitRegions,
+      );
       return;
     }
 
@@ -386,12 +450,23 @@ async function main() {
       );
     }
 
-    // Parse regions into array
     const regionsFromCli = values.region
       .split(",")
       .map((r) => r.trim())
       .filter((r) => r.length > 0);
 
+    /**
+     * Determines if a service should be included in the inventory based on --services filter.
+     *
+     * @param service - AWS service name to check
+     * @returns True if service should be inventoried, false otherwise
+     *
+     * @example
+     * ```typescript
+     * shouldRun('EC2')  // true if no filter, or filter includes 'ec2' or 'all'
+     * shouldRun('RDS')  // false if filter is 'EC2,S3'
+     * ```
+     */
     const shouldRun = (service: string): boolean =>
       !selectedServices ||
       selectedServices.has("all") ||
@@ -400,17 +475,14 @@ async function main() {
     let hadErrors = false;
     let refreshCredentials: (() => Promise<void>) | undefined;
 
-    // Process each account
     for (const account of accounts) {
       try {
-        // Determine which regions to process for this account
         const regionsToProcess = account.region
           ? [account.region]
           : regionsFromCli.length > 0
             ? regionsFromCli
             : ["us-east-1"];
 
-        // Determine authentication method based on account name and whether letme is used
         const isAccountId = /^\d{12}$/.test(account.name);
         const isLocalDefault = account.name === "local";
         const isLetmeAccount =
@@ -419,7 +491,6 @@ async function main() {
           !values["use-letme"] && !isAccountId && !isLocalDefault;
 
         if (isLetmeAccount) {
-          // This is a letme-managed account
           refreshCredentials = async () => {
             const mfaToken = generateTOTPToken(secret);
             log(`\nGenerated new MFA token for ${account.name}: ${mfaToken}`);
@@ -434,17 +505,14 @@ async function main() {
           );
           await obtainAWSCredentials(account.name, mfaToken, log);
         } else if (isNamedProfile) {
-          // This is a named AWS profile (e.g., SSO profile)
           refreshCredentials = undefined;
           process.env.AWS_PROFILE = account.name;
           log(color.info(`Set AWS_PROFILE to: ${color.bold(account.name)}`));
         } else {
-          // This is either "local" or an account ID - use default AWS credentials
           refreshCredentials = undefined;
           delete process.env.AWS_PROFILE;
         }
 
-        // Process each region for this account
         for (const region of regionsToProcess) {
           log(
             color.boldInfo(
@@ -455,17 +523,19 @@ async function main() {
           const outputDir = `inventory-output/${account.name}-${region}-${timestamp}`;
           await $`mkdir -p ${outputDir}`;
 
-          // Create message buffer for this region to avoid breaking progress bar
           const messageBuffer: string[] = [];
+
+          /**
+           * Buffers log messages during inventory operations to prevent breaking progress bar display.
+           *
+           * @param msg - Message to buffer for later display
+           */
           const bufferLog = (msg: string) => {
             messageBuffer.push(msg);
           };
 
-          // Temporarily replace log function to buffer messages during inventory
-          // This prevents breaking the progress bar
           setLog(bufferLog, true);
 
-          // Define all services to inventory
           const allServices = [
             "EC2",
             "RDS",
@@ -502,11 +572,9 @@ async function main() {
             "NetworkInterface",
           ];
 
-          // Count services that will be processed
           const servicesToProcess = allServices.filter(shouldRun);
           const totalServices = servicesToProcess.length;
 
-          // Create progress bar if not silent
           let progressBar: ProgressBar | null = null;
           if (!values.silent && totalServices > 0) {
             progressBar = new ProgressBar(
@@ -521,7 +589,12 @@ async function main() {
             );
           }
 
-          // Helper function to update progress
+          /**
+           * Updates the progress bar with the current service being inventoried.
+           * Colorizes the service name and advances the progress indicator.
+           *
+           * @param serviceName - Name of the service currently being processed
+           */
           const updateProgress = (serviceName: string) => {
             if (progressBar) {
               const coloredService = getServiceColor(serviceName)(serviceName);
@@ -1050,9 +1123,18 @@ async function main() {
                     `${inst.id},${inst.name},${inst.state},${inst.type},${inst.privateIp},${inst.publicIp}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/EC2-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/EC2-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "EC2",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (rdsInstances.length > 0) {
@@ -1063,9 +1145,18 @@ async function main() {
                   (rds) => `${rds.id},${rds.name},${rds.engine},${rds.status}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/RDS-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/RDS-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "RDS",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (s3Buckets.length > 0) {
@@ -1074,9 +1165,18 @@ async function main() {
               s3Buckets
                 .map((bucket) => `${bucket.name},${bucket.creationDate}`)
                 .join("\n");
-            const filename = `${outputDir}/S3-global-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/S3-global-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "S3",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           let vpcs: VPC[] = [];
@@ -1100,9 +1200,18 @@ async function main() {
               vpcs
                 .map((vpc) => `${vpc.id},${vpc.name},${vpc.state},${vpc.cidr}`)
                 .join("\n");
-            const filename = `${outputDir}/VPC-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/VPC-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "VPC",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (subnets.length > 0) {
@@ -1114,9 +1223,18 @@ async function main() {
                     `${subnet.id},${subnet.name},${subnet.vpcId},${subnet.cidr},${subnet.availabilityZone}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/Subnet-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/Subnet-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "Subnet",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (securityGroups.length > 0) {
@@ -1127,9 +1245,18 @@ async function main() {
                   (sg) => `${sg.id},${sg.name},${sg.description},${sg.vpcId}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/SecurityGroup-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/SecurityGroup-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "SecurityGroup",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (loadBalancers.length > 0) {
@@ -1138,9 +1265,18 @@ async function main() {
               loadBalancers
                 .map((lb) => `${lb.name},${lb.type},${lb.state},${lb.dnsName}`)
                 .join("\n");
-            const filename = `${outputDir}/LoadBalancer-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/LoadBalancer-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "LoadBalancer",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (lambdaFunctions.length > 0) {
@@ -1152,9 +1288,18 @@ async function main() {
                     `${func.name},${func.runtime},${func.handler},${func.lastModified}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/Lambda-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/Lambda-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "Lambda",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (dynamoDBTables.length > 0) {
@@ -1165,9 +1310,18 @@ async function main() {
                   (table) => `${table.name},${table.status},${table.itemCount}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/DynamoDB-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/DynamoDB-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "DynamoDB",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (ecsClusters.length > 0) {
@@ -1179,9 +1333,18 @@ async function main() {
                     `${cluster.name},${cluster.status},${cluster.registeredContainerInstancesCount},${cluster.runningTasksCount}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/ECS-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/ECS-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "ECS",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (eksClusters.length > 0) {
@@ -1193,9 +1356,18 @@ async function main() {
                     `${cluster.name},${cluster.status},${cluster.version}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/EKS-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/EKS-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "EKS",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (cloudFrontDistributions.length > 0) {
@@ -1207,9 +1379,18 @@ async function main() {
                     `${dist.id},${dist.domainName},${dist.status},${dist.enabled}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/CloudFront-global-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/CloudFront-global-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "CloudFront",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (route53HostedZones.length > 0) {
@@ -1218,9 +1399,18 @@ async function main() {
               route53HostedZones
                 .map((zone) => `${zone.id},${zone.name},${zone.privateZone}`)
                 .join("\n");
-            const filename = `${outputDir}/Route53-global-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/Route53-global-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "Route53",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (iamUsers.length > 0) {
@@ -1232,9 +1422,18 @@ async function main() {
                     `${user.userName},${user.userId},${user.arn},${user.createDate}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/IAMUser-global-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/IAMUser-global-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "IAMUser",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (iamRoles.length > 0) {
@@ -1246,9 +1445,18 @@ async function main() {
                     `${role.roleName},${role.roleId},${role.arn},${role.createDate}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/IAMRole-global-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/IAMRole-global-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "IAMRole",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (redshiftClusters.length > 0) {
@@ -1260,9 +1468,18 @@ async function main() {
                     `${cluster.clusterIdentifier},${cluster.nodeType},${cluster.clusterStatus},${cluster.masterUsername},${cluster.dbName},${cluster.endpoint},${cluster.port}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/Redshift-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/Redshift-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "Redshift",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (glueJobs.length > 0) {
@@ -1274,9 +1491,18 @@ async function main() {
                     `${job.name},${job.description},${job.role},${job.createdOn},${job.lastModifiedOn}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/Glue-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/Glue-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "Glue",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (openSearchDomains.length > 0) {
@@ -1288,9 +1514,18 @@ async function main() {
                     `${domain.domainName},${domain.arn},${domain.created},${domain.deleted},${domain.endpoint},${domain.multiAzWithStandbyEnabled},${domain.upgradeProcessing}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/OpenSearch-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/OpenSearch-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "OpenSearch",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (kmsKeys.length > 0) {
@@ -1302,9 +1537,18 @@ async function main() {
                     `${key.keyId},${key.keyArn},${key.description},${key.keyUsage},${key.keyState},${key.creationDate}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/KMS-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/KMS-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "KMS",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (cloudWatchAlarms.length > 0) {
@@ -1316,9 +1560,18 @@ async function main() {
                     `${alarm.alarmName},${alarm.alarmDescription},${alarm.stateValue},${alarm.stateReason},${alarm.metricName},${alarm.namespace}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/CloudWatch-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/CloudWatch-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "CloudWatch",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (secretsManagerSecrets.length > 0) {
@@ -1330,9 +1583,18 @@ async function main() {
                     `${secret.name},${secret.description},${secret.secretArn},${secret.createdDate},${secret.lastChangedDate}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/SecretsManager-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/SecretsManager-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "SecretsManager",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (ecrRepositories.length > 0) {
@@ -1344,9 +1606,18 @@ async function main() {
                     `${repo.repositoryName},${repo.repositoryArn},${repo.registryId},${repo.createdAt}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/ECR-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/ECR-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "ECR",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (internetGateways.length > 0) {
@@ -1355,9 +1626,18 @@ async function main() {
               internetGateways
                 .map((igw) => `${igw.id},${igw.name},${igw.vpcId},${igw.state}`)
                 .join("\n");
-            const filename = `${outputDir}/InternetGateway-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/InternetGateway-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "InternetGateway",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (natGateways.length > 0) {
@@ -1369,9 +1649,18 @@ async function main() {
                     `${natgw.id},${natgw.name},${natgw.vpcId},${natgw.subnetId},${natgw.state},${natgw.publicIp}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/NatGateway-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/NatGateway-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "NatGateway",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (elasticIPs.length > 0) {
@@ -1383,9 +1672,18 @@ async function main() {
                     `${eip.allocationId},${eip.publicIp},${eip.domain},${eip.instanceId},${eip.networkInterfaceId},${eip.associationId}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/ElasticIP-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/ElasticIP-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "ElasticIP",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (vpnGateways.length > 0) {
@@ -1397,9 +1695,18 @@ async function main() {
                     `${vpngw.id},${vpngw.name},${vpngw.type},${vpngw.state},${vpngw.vpcId}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/VpnGateway-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/VpnGateway-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "VpnGateway",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (vpnConnections.length > 0) {
@@ -1411,9 +1718,18 @@ async function main() {
                     `${vpnconn.id},${vpnconn.name},${vpnconn.state},${vpnconn.vpnGatewayId},${vpnconn.customerGatewayId},${vpnconn.type},${vpnconn.category}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/VpnConnection-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/VpnConnection-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "VpnConnection",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (transitGateways.length > 0) {
@@ -1425,9 +1741,18 @@ async function main() {
                     `${tgw.id},${tgw.name},${tgw.state},${tgw.ownerId},${tgw.description}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/TransitGateway-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/TransitGateway-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "TransitGateway",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (vpcEndpoints.length > 0) {
@@ -1439,9 +1764,18 @@ async function main() {
                     `${endpoint.id},${endpoint.name},${endpoint.vpcId},${endpoint.serviceName},${endpoint.type},${endpoint.state}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/VpcEndpoint-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/VpcEndpoint-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "VpcEndpoint",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (vpcPeeringConnections.length > 0) {
@@ -1453,9 +1787,18 @@ async function main() {
                     `${peering.id},${peering.name},${peering.status},${peering.requesterVpcId},${peering.accepterVpcId}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/VpcPeering-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/VpcPeering-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "VpcPeering",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (networkAcls.length > 0) {
@@ -1467,9 +1810,18 @@ async function main() {
                     `${nacl.id},${nacl.name},${nacl.vpcId},${nacl.isDefault}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/NetworkAcl-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/NetworkAcl-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "NetworkAcl",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (routeTables.length > 0) {
@@ -1478,9 +1830,18 @@ async function main() {
               routeTables
                 .map((rtb) => `${rtb.id},${rtb.name},${rtb.vpcId},${rtb.main}`)
                 .join("\n");
-            const filename = `${outputDir}/RouteTable-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/RouteTable-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "RouteTable",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           if (networkInterfaces.length > 0) {
@@ -1492,9 +1853,18 @@ async function main() {
                     `${eni.id},${eni.name},${eni.vpcId},${eni.subnetId},${eni.privateIp},${eni.publicIp},${eni.status}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/NetworkInterface-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/NetworkInterface-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "NetworkInterface",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           // Control Tower Guardrails (regional API, but manages global guardrails)
@@ -1524,9 +1894,18 @@ async function main() {
                     `${guardrail.guardrailArn},${guardrail.guardrailName},${guardrail.guardrailState},${guardrail.behavior},${guardrail.organizationalUnitArn}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/ControlTower-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/ControlTower-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "ControlTower",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           // Service Control Policies (global, only run once per account)
@@ -1557,9 +1936,18 @@ async function main() {
                       `${policy.id},${policy.arn},${policy.name},"${policy.description}",${policy.type},${policy.awsManaged}`,
                   )
                   .join("\n");
-              const filename = `${outputDir}/SCP-global-${timestamp}-${account.name}.csv`;
-              await Bun.write(filename, csv);
-              bufferLog(`Wrote ${filename}`);
+              const basePath = `${outputDir}/SCP-global-${timestamp}-${account.name}`;
+              await writeInventoryFile(
+                csv,
+                basePath,
+                values["export-format"],
+                "SCP",
+              );
+              const extensions =
+                values["export-format"] === "both"
+                  ? ".csv and .xlsx"
+                  : `.${values["export-format"]}`;
+              bufferLog(`Wrote ${basePath}${extensions}`);
             }
           }
 
@@ -1589,9 +1977,18 @@ async function main() {
                     `${rule.configRuleName},${rule.configRuleArn},${rule.configRuleId},"${rule.description}",${rule.complianceStatus},${rule.source}`,
                 )
                 .join("\n");
-            const filename = `${outputDir}/ConfigRules-${region}-${timestamp}-${account.name}.csv`;
-            await Bun.write(filename, csv);
-            bufferLog(`Wrote ${filename}`);
+            const basePath = `${outputDir}/ConfigRules-${region}-${timestamp}-${account.name}`;
+            await writeInventoryFile(
+              csv,
+              basePath,
+              values["export-format"],
+              "ConfigRules",
+            );
+            const extensions =
+              values["export-format"] === "both"
+                ? ".csv and .xlsx"
+                : `.${values["export-format"]}`;
+            bufferLog(`Wrote ${basePath}${extensions}`);
           }
 
           // Restore original log function

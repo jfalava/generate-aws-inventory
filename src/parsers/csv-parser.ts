@@ -1,17 +1,61 @@
 import { z } from "zod";
 
+/**
+ * Zod schema for validating individual account configuration entries.
+ * Ensures account name is non-empty and region is optional.
+ */
 const accountSchema = z.object({
   name: z.string().min(1, "Account name cannot be empty"),
   region: z.string().optional(),
 });
 
+/**
+ * Zod schema for validating the complete CSV configuration structure.
+ * Validates that the parsed CSV contains an array of account objects.
+ */
 const csvConfigSchema = z.object({
   accounts: z.array(accountSchema),
 });
 
+/**
+ * Type representing a single AWS account configuration entry.
+ * Inferred from the accountSchema for type safety.
+ */
 export type AccountConfig = z.infer<typeof accountSchema>;
+
+/**
+ * Type representing the complete CSV configuration structure.
+ * Inferred from the csvConfigSchema for type safety.
+ */
 export type CsvConfig = z.infer<typeof csvConfigSchema>;
 
+/**
+ * Parses CSV content into an array of AWS account configurations.
+ * Validates the CSV format and ensures it has the correct headers and structure.
+ *
+ * @param csvContent - Raw CSV string content to parse
+ * @returns Array of validated account configurations with name and optional region
+ * @throws Error if CSV has fewer than 2 lines (header + at least one data row)
+ * @throws Error if CSV header doesn't contain exactly 'account,region'
+ * @throws Error if any data row has fewer than 2 columns
+ * @throws Error if any account name is empty
+ *
+ * @example
+ * ```typescript
+ * const csvContent = `account,region
+ * production,us-east-1
+ * staging,eu-west-1
+ * development,ap-southeast-1`;
+ *
+ * const accounts = parseCsvToAccounts(csvContent);
+ * console.log(accounts);
+ * // Output: [
+ * //   { name: 'production', region: 'us-east-1' },
+ * //   { name: 'staging', region: 'eu-west-1' },
+ * //   { name: 'development', region: 'ap-southeast-1' }
+ * // ]
+ * ```
+ */
 export function parseCsvToAccounts(csvContent: string): AccountConfig[] {
   const lines = csvContent.trim().split("\n");
   if (lines.length < 2) {

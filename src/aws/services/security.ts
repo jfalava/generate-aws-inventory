@@ -1,4 +1,34 @@
-import { $ } from "bun";
+import {
+  ListUsersCommand,
+  ListRolesCommand,
+  type User,
+  type Role,
+} from "@aws-sdk/client-iam";
+import {
+  ListKeysCommand,
+  DescribeKeyCommand,
+  type KeyListEntry,
+} from "@aws-sdk/client-kms";
+import {
+  ListSecretsCommand,
+  type SecretListEntry,
+} from "@aws-sdk/client-secrets-manager";
+import {
+  ListWebACLsCommand,
+  ListTagsForResourceCommand as ListWAFTagsCommand,
+  Scope,
+  type WebACLSummary,
+} from "@aws-sdk/client-wafv2";
+import {
+  ListDetectorsCommand,
+  GetDetectorCommand,
+} from "@aws-sdk/client-guardduty";
+import {
+  ListUserPoolsCommand,
+  DescribeUserPoolCommand,
+  ListTagsForResourceCommand as ListCognitoTagsCommand,
+  type UserPoolDescriptionType,
+} from "@aws-sdk/client-cognito-identity-provider";
 import type {
   IAMUser,
   IAMRole,
@@ -9,22 +39,50 @@ import type {
   CognitoUserPool,
 } from "../aws-cli.types";
 import { getLog } from "./utils";
+import {
+  getIAMClient,
+  getKMSClient,
+  getSecretsManagerClient,
+  getWAFv2Client,
+  getGuardDutyClient,
+  getCognitoClient,
+} from "../sdk-clients";
+import { executeWithRetry } from "../sdk-error-handler";
 
 export async function describeIAMUsers(): Promise<IAMUser[]> {
   const { log, verbose } = getLog();
-
-  const result = await $`aws iam list-users --output json`.text();
-  const data = JSON.parse(result);
+  const client = getIAMClient();
 
   const users: IAMUser[] = [];
 
-  for (const user of data.Users || []) {
-    users.push({
-      userName: user.UserName,
-      userId: user.UserId,
-      arn: user.Arn,
-      createDate: user.CreateDate,
-    });
+  // Use pagination to get all users
+  let marker: string | undefined = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListUsersCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "IAM Users",
+      3,
+      1000,
+    );
+
+    for (const user of data.Users || []) {
+      users.push({
+        userName: user.UserName || "unknown",
+        userId: user.UserId || "unknown",
+        arn: user.Arn || "unknown",
+        createDate: user.CreateDate?.toISOString() || "N/A",
+      });
+    }
+
+    isTruncated = data.IsTruncated || false;
+    marker = data.Marker;
   }
 
   return users;
@@ -32,19 +90,38 @@ export async function describeIAMUsers(): Promise<IAMUser[]> {
 
 export async function describeIAMRoles(): Promise<IAMRole[]> {
   const { log, verbose } = getLog();
-
-  const result = await $`aws iam list-roles --output json`.text();
-  const data = JSON.parse(result);
+  const client = getIAMClient();
 
   const roles: IAMRole[] = [];
 
-  for (const role of data.Roles || []) {
-    roles.push({
-      roleName: role.RoleName,
-      roleId: role.RoleId,
-      arn: role.Arn,
-      createDate: role.CreateDate,
-    });
+  // Use pagination to get all roles
+  let marker: string | undefined = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListRolesCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "IAM Roles",
+      3,
+      1000,
+    );
+
+    for (const role of data.Roles || []) {
+      roles.push({
+        roleName: role.RoleName || "unknown",
+        roleId: role.RoleId || "unknown",
+        arn: role.Arn || "unknown",
+        createDate: role.CreateDate?.toISOString() || "N/A",
+      });
+    }
+
+    isTruncated = data.IsTruncated || false;
+    marker = data.Marker;
   }
 
   return roles;
@@ -52,26 +129,56 @@ export async function describeIAMRoles(): Promise<IAMRole[]> {
 
 export async function describeKMSKeys(region: string): Promise<KMSKey[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws kms list-keys --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getKMSClient(region);
 
   const keys: KMSKey[] = [];
 
-  for (const key of data.Keys || []) {
-    const descResult =
-      await $`aws kms describe-key --key-id ${key.KeyId} --region ${region} --output json`.text();
-    const descData = JSON.parse(descResult);
-    const keyMetadata = descData.KeyMetadata;
-    keys.push({
-      keyId: keyMetadata.KeyId,
-      keyArn: keyMetadata.Arn,
-      description: keyMetadata.Description || "N/A",
-      keyUsage: keyMetadata.KeyUsage,
-      keyState: keyMetadata.KeyState,
-      creationDate: keyMetadata.CreationDate,
-    });
+  // Use pagination to get all keys
+  let marker: string | undefined = undefined;
+  let truncated = true;
+
+  while (truncated) {
+    const listData = await executeWithRetry(
+      async () => {
+        const command = new ListKeysCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "KMS List",
+      3,
+      1000,
+    );
+
+    for (const key of listData.Keys || []) {
+      // Get detailed info for each key
+      const descData = await executeWithRetry(
+        async () => {
+          const command = new DescribeKeyCommand({
+            KeyId: key.KeyId,
+          });
+          return await client.send(command);
+        },
+        "KMS Describe",
+        3,
+        1000,
+      );
+
+      const keyMetadata = descData.KeyMetadata;
+      if (keyMetadata) {
+        keys.push({
+          keyId: keyMetadata.KeyId || "unknown",
+          keyArn: keyMetadata.Arn || "unknown",
+          description: keyMetadata.Description || "N/A",
+          keyUsage: keyMetadata.KeyUsage || "N/A",
+          keyState: keyMetadata.KeyState || "N/A",
+          creationDate: keyMetadata.CreationDate?.toISOString() || "N/A",
+        });
+      }
+    }
+
+    truncated = listData.Truncated || false;
+    marker = listData.NextMarker;
   }
 
   return keys;
@@ -81,22 +188,38 @@ export async function describeSecretsManagerSecrets(
   region: string,
 ): Promise<SecretsManagerSecret[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws secretsmanager list-secrets --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getSecretsManagerClient(region);
 
   const secrets: SecretsManagerSecret[] = [];
 
-  for (const secret of data.SecretList || []) {
-    secrets.push({
-      name: secret.Name,
-      description: secret.Description || "N/A",
-      secretArn: secret.ARN,
-      createdDate: secret.CreatedDate,
-      lastChangedDate: secret.LastChangedDate,
-    });
-  }
+  // Use pagination to get all secrets
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListSecretsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Secrets Manager",
+      3,
+      1000,
+    );
+
+    for (const secret of data.SecretList || []) {
+      secrets.push({
+        name: secret.Name || "unknown",
+        description: secret.Description || "N/A",
+        secretArn: secret.ARN || "unknown",
+        createdDate: secret.CreatedDate?.toISOString() || "N/A",
+        lastChangedDate: secret.LastChangedDate?.toISOString() || "N/A",
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return secrets;
 }
@@ -105,46 +228,84 @@ export async function describeCognitoUserPools(
   region: string,
 ): Promise<CognitoUserPool[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws cognito-idp list-user-pools --max-results 60 --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getCognitoClient(region);
 
   const pools: CognitoUserPool[] = [];
 
-  for (const pool of data.UserPools || []) {
-    // Get detailed info for each pool
-    try {
-      const descResult =
-        await $`aws cognito-idp describe-user-pool --user-pool-id ${pool.Id} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
-      const poolDetails = descData.UserPool;
+  // Use pagination to get all user pools
+  let nextToken: string | undefined = undefined;
 
-      // Get tags
-      const tags: Record<string, string> = {};
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListUserPoolsCommand({
+          MaxResults: 60,
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Cognito List",
+      3,
+      1000,
+    );
+
+    for (const pool of data.UserPools || []) {
+      // Get detailed info for each pool
       try {
-        const poolArn = poolDetails.Arn;
-        const tagsResult =
-          await $`aws cognito-idp list-tags-for-resource --resource-arn ${poolArn} --region ${region} --output json`.text();
-        const tagsData = JSON.parse(tagsResult);
-        if (tagsData.Tags) {
-          for (const [key, value] of Object.entries(tagsData.Tags)) {
-            tags[key] = value as string;
-          }
+        const descData = await executeWithRetry(
+          async () => {
+            const command = new DescribeUserPoolCommand({
+              UserPoolId: pool.Id,
+            });
+            return await client.send(command);
+          },
+          "Cognito Describe",
+          3,
+          1000,
+        );
+
+        const poolDetails = descData.UserPool;
+
+        // Get tags
+        const tags: Record<string, string> = {};
+        if (poolDetails?.Arn) {
+          try {
+            const tagsData = await executeWithRetry(
+              async () => {
+                const command = new ListCognitoTagsCommand({
+                  ResourceArn: poolDetails.Arn,
+                });
+                return await client.send(command);
+              },
+              "Cognito Tags",
+              3,
+              1000,
+            );
+
+            if (tagsData.Tags) {
+              for (const [key, value] of Object.entries(tagsData.Tags)) {
+                tags[key] = value as string;
+              }
+            }
+          } catch {}
+        }
+
+        if (poolDetails) {
+          pools.push({
+            id: pool.Id || "unknown",
+            name: pool.Name || "unknown",
+            status: poolDetails.Status || "UNKNOWN",
+            creationDate: pool.CreationDate?.toISOString() || "N/A",
+            lastModifiedDate: pool.LastModifiedDate?.toISOString() || "N/A",
+            mfaConfiguration: poolDetails.MfaConfiguration || "OFF",
+            tags,
+          });
         }
       } catch {}
+    }
 
-      pools.push({
-        id: pool.Id,
-        name: pool.Name,
-        status: poolDetails.Status,
-        creationDate: pool.CreationDate,
-        lastModifiedDate: pool.LastModifiedDate,
-        mfaConfiguration: poolDetails.MfaConfiguration,
-        tags,
-      });
-    } catch {}
-  }
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return pools;
 }
@@ -158,37 +319,67 @@ export async function describeCognitoUserPools(
  */
 export async function describeWAFWebACLs(region: string): Promise<WAFWebACL[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws wafv2 list-web-acls --scope REGIONAL --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getWAFv2Client(region);
 
   const acls: WAFWebACL[] = [];
 
-  for (const acl of data.WebACLs || []) {
-    // Get tags
-    const tags: Record<string, string> = {};
-    try {
-      const tagsResult =
-        await $`aws wafv2 list-tags-for-resource --resource-arn ${acl.ARN} --region ${region} --output json`.text();
-      const tagsData = JSON.parse(tagsResult);
-      if (tagsData.TagInfoForResource?.TagList) {
-        for (const tag of tagsData.TagInfoForResource.TagList) {
-          tags[tag.Key] = tag.Value;
-        }
-      }
-    } catch {}
+  // Use pagination to get all web ACLs
+  let nextMarker: string | undefined = undefined;
 
-    acls.push({
-      name: acl.Name,
-      id: acl.Id,
-      arn: acl.ARN,
-      description: acl.Description,
-      scope: "REGIONAL",
-      capacity: acl.Capacity,
-      tags,
-    });
-  }
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListWebACLsCommand({
+          Scope: Scope.REGIONAL,
+          NextMarker: nextMarker,
+        });
+        return await client.send(command);
+      },
+      "WAF List",
+      3,
+      1000,
+    );
+
+    for (const acl of data.WebACLs || []) {
+      // Get tags
+      const tags: Record<string, string> = {};
+      if (acl.ARN) {
+        try {
+          const tagsData = await executeWithRetry(
+            async () => {
+              const command = new ListWAFTagsCommand({
+                ResourceARN: acl.ARN,
+              });
+              return await client.send(command);
+            },
+            "WAF Tags",
+            3,
+            1000,
+          );
+
+          if (tagsData.TagInfoForResource?.TagList) {
+            for (const tag of tagsData.TagInfoForResource.TagList) {
+              if (tag.Key && tag.Value) {
+                tags[tag.Key] = tag.Value;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      acls.push({
+        name: acl.Name || "unknown",
+        id: acl.Id || "unknown",
+        arn: acl.ARN || "unknown",
+        description: acl.Description || "N/A",
+        scope: "REGIONAL",
+        capacity: 0, // Capacity is only available in GetWebACL, not in ListWebACLs
+        tags,
+      });
+    }
+
+    nextMarker = data.NextMarker;
+  } while (nextMarker);
 
   return acls;
 }
@@ -204,18 +395,48 @@ export async function describeGuardDutyDetectors(
   region: string,
 ): Promise<GuardDutyDetector[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws guardduty list-detectors --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getGuardDutyClient(region);
 
   const detectors: GuardDutyDetector[] = [];
 
-  for (const detectorId of data.DetectorIds || []) {
+  // Use pagination to get all detector IDs
+  let nextToken: string | undefined = undefined;
+  const detectorIds: string[] = [];
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListDetectorsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "GuardDuty List",
+      3,
+      1000,
+    );
+
+    if (data.DetectorIds) {
+      detectorIds.push(...data.DetectorIds);
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
+
+  // Get details for each detector
+  for (const detectorId of detectorIds) {
     try {
-      const descResult =
-        await $`aws guardduty get-detector --detector-id ${detectorId} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
+      const descData = await executeWithRetry(
+        async () => {
+          const command = new GetDetectorCommand({
+            DetectorId: detectorId,
+          });
+          return await client.send(command);
+        },
+        "GuardDuty Get",
+        3,
+        1000,
+      );
 
       const tags: Record<string, string> = {};
       if (descData.Tags) {
@@ -226,9 +447,9 @@ export async function describeGuardDutyDetectors(
 
       detectors.push({
         detectorId,
-        status: descData.Status,
-        serviceRole: descData.ServiceRole,
-        createdAt: descData.CreatedAt,
+        status: descData.Status || "UNKNOWN",
+        serviceRole: descData.ServiceRole || "N/A",
+        createdAt: descData.CreatedAt || "N/A",
         tags,
       });
     } catch {}

@@ -1,7 +1,18 @@
-// Re-export utility functions
+/**
+ * AWS CLI integration module - Central barrel export for all AWS service inventory functions.
+ *
+ * This module provides a unified interface to AWS SDK-based service inventory operations,
+ * organized by AWS service categories including compute, storage, database, networking,
+ * security, developer tools, management, governance, application integration, and analytics.
+ *
+ * All exported functions interact with AWS services using the AWS SDK v3 and include
+ * automatic retry logic with credential refresh capabilities.
+ *
+ * @module aws-cli
+ */
+
 export { setLog, getAccountId, getAllRegions } from "./services/utils";
 
-// Re-export compute services
 export {
   describeEC2,
   describeLambdaFunctions,
@@ -10,7 +21,6 @@ export {
   describeAutoScalingGroups,
 } from "./services/compute";
 
-// Re-export storage services
 export {
   describeS3,
   describeEBSVolumes,
@@ -18,7 +28,6 @@ export {
   describeBackupVaults,
 } from "./services/storage";
 
-// Re-export database services
 export {
   describeRDS,
   describeDynamoDBTables,
@@ -27,7 +36,6 @@ export {
   describeElastiCacheClusters,
 } from "./services/database";
 
-// Re-export networking services
 export {
   describeVPCs,
   describeSubnets,
@@ -46,7 +54,6 @@ export {
   describeNetworkInterfaces,
 } from "./services/networking";
 
-// Re-export security services
 export {
   describeIAMUsers,
   describeIAMRoles,
@@ -57,13 +64,11 @@ export {
   describeCognitoUserPools,
 } from "./services/security";
 
-// Re-export developer tools services
 export {
   describeECRRepositories,
   describeGlueJobs,
 } from "./services/developer-tools";
 
-// Re-export management services
 export {
   describeCloudWatchAlarms,
   describeCloudFrontDistributions,
@@ -76,20 +81,17 @@ export {
   describeSSMParameters,
 } from "./services/management";
 
-// Re-export governance services
 export {
   describeControlTowerGuardrails,
   describeServiceControlPolicies,
   describeConfigRules,
 } from "./services/governance";
 
-// Re-export application integration services
 export {
   describeSQSQueues,
   describeSNSTopics,
 } from "./services/application-integration";
 
-// Re-export analytics services
 export {
   describeKinesisStreams,
   describeAthenaWorkgroups,

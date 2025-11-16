@@ -1,172 +1,105 @@
 # AWS Inventory Generator
 
-Un wrapper de `awscli` escrito en Bun.
+Un generador de inventarios de AWS, escrito en Bun
 
-## Requerimientos
+## Inicio Rápido
 
-- [AWS CLI v2](https://docs.aws.amazon.com/es_es/cli/latest/userguide/getting-started-install.html)
-- [letme](https://github.com/lockedinspace/letme) - no es necesario si se usa otro sistema de asunción de roles.
+```bash
+# Inventario básico
+./generate-aws-inventory --init
 
-> Esta aplicación usa [Bun Secrets](https://bun.com/docs/runtime/secrets) para almacenar el secreto para generar el TOTP para `letme`.
+# Auditoría de seguridad (detecta versiones obsoletas)
+./generate-aws-inventory --init-security --export-format xlsx
 
-### Ubuntu/Debian
-
-```sh
-sudo apt install libsecret-1-0 libsecret-1-dev gnome-keyring
+# Optimización de costos
+./generate-aws-inventory --init-cost
 ```
 
-Puedes añadir las siguientes líneas al perfil de tu shell para inicializar el llavero con cada nueva sesión:
+**→ [Guía de inicio completa](docs/quick-start.md)**
 
-```sh
-# keyring daemons
-if ! pgrep -f "dbus-daemon" > /dev/null; then
-  dbus-daemon --session --fork 2>/dev/null
-fi
-if ! pgrep -f "gnome-keyring-daemon" > /dev/null; then
-  gnome-keyring-daemon --start --components=secrets 2>/dev/null
-fi
+## Características
+
+- [x] **41 tipos de recursos** AWS
+- [x] **Detección automática** de versiones obsoletas (EKS, Lambda, RDS, ElastiCache)
+- [x] **4 modos**: básico, detallado, seguridad, costos
+- [x] **Exportación** CSV, Excel o ambos
+- [x] **Multi-cuenta** y multi-región
+
+## Requisitos
+
+- **Solo Linux**: [libsecret](docs/libsecret-setup.md) (solo para MFA con letme)
+
+## Desarollo local
+
+Necesitas [Bun](https://bun.com) instalado en tu entorno.
+
+```bash
+# Instala Bun: https://bun.com
+bun install
+
+# Opcional: lint y typecheck
+bun run lint
+bun run typecheck
+
+# Crear binarios para todas las plataformas
+bun run build:all
 ```
 
-### Windows
+Esto genera archivos `.zip` en `dist/` con los ejecutables compilados para cada plataforma.
 
-Usa la solución nativa [Credential Manager](https://support.microsoft.com/es-es/windows/administrador-de-credenciales-en-windows-1b5c916a-6a16-889f-8581-fc16e8165ac0).
+**Scripts individuales:**
 
-### macOS
-
-Usa la solución nativa [Keychain](https://support.apple.com/es-es/guide/keychain-access/kyca1083/mac).
-
-## Ejemplos de uso
-
-```sh
-./generate-aws-inventory [PARAMETROS]
+```bash
+bun run build:windows-x64
+bun run build:linux-x64
+bun run build:macOS-arm
 ```
 
-## Opciones
+## Documentación
 
-| Parámetros                       | Descripción                                                                                                                                                                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-a`, `--account` <ACCOUNT_NAME> | Especificar el nombre de la cuenta/perfil de AWS. Sin `--use-letme`, usa el perfil de AWS de `~/.aws/config` o `~/.aws/credentials`.                                                                                    |
-| `-r`, `--region` <REGION>        | Región(es) de AWS para inventariar. Soporta lista separada por comas (p. ej., us-east-1,us-west-2). Por defecto: us-east-1.                                                                                             |
-| `-j`, `--json` <FILE>            | Ruta a un archivo de configuración JSON que contiene un array de cuentas (requiere `--use-letme`).                                                                                                                      |
-| `-c`, `--csv` <FILE>             | Ruta a un archivo de configuración CSV que contiene cuentas y regiones (requiere `--use-letme`).                                                                                                                        |
-| `--setup-totp`                   | Configurar secreto TOTP para autenticación MFA.                                                                                                                                                                         |
-| `-s`, `--silent`                 | Desactivar salida de logging (el logging está activado por defecto).                                                                                                                                                    |
-| `-l`, `--use-letme`              | Usar la herramienta letme para gestión de credenciales con MFA (requiere configuración de TOTP).                                                                                                                        |
-| `--stop-on-error`                | Detener el procesamiento en el primer error en lugar de continuar.                                                                                                                                                      |
-| `--services` <SERVICES>          | Lista separada por comas de servicios para inventariar (p. ej., EC2,RDS,S3,all). Si no se especifica, todos los servicios se describen y se genera un inventario.                                                       |
-| `--describe` <PATH>              | Ruta a la carpeta de salida del inventario, directorio padre o archivo CSV para generar descripciones detalladas. Soporta carpetas (procesa todos los CSVs), directorios padre (recursivo) o archivos CSV individuales. |
-| `--describe-harder` <CSV_FILE>   | Ruta a un archivo CSV para generar descripciones detalladas exhaustivas con toda la información disponible en tablas markdown estructuradas.                                                                            |
-| `--output` <FORMAT>              | Formato de salida para descripciones detalladas (json, text, markdown). Por defecto: markdown.                                                                                                                          |
-| `-h`, `--help`                   | Mostrar este mensaje de ayuda.                                                                                                                                                                                          |
-| `-e`, `--help-examples`          | Mostrar ejemplos y formatos de archivos.                                                                                                                                                                                |
+**→ [Documentación completa](docs/docs.md)**
 
-### Ejemplos:
+### Guías Principales
 
-- Configura el TOTP:
+- [Guía de Inicio Rápido](docs/quick-start.md)
+- [Modos de Inventario](docs/init.md)
+- [Auditoría de Seguridad](docs/init-security.md)
+- [Autenticación](docs/authentication.md)
+- [Lista de Servicios](docs/services-list.md)
 
-```sh
-./generate-aws-inventory --setup-totp
+## Ejemplos
+
+```bash
+# Con perfil AWS
+./generate-aws-inventory --account my-profile --init-detailed
+
+# Servicios específicos
+./generate-aws-inventory --services EC2,RDS,S3
+
+# Múltiples regiones (estándar)
+./generate-aws-inventory --region us-east-1,us-west-2,eu-west-1
+
+# Limitar regiones en init (evita errores de rate limit)
+./generate-aws-inventory --init --limit-regions us-east-1,us-west-2
+
+# Auditoría de seguridad en regiones específicas
+./generate-aws-inventory --init-security --limit-regions us-east-1,eu-west-1
+
+# Con MFA (letme)
+./generate-aws-inventory --setup-totp  # configurar una vez
+./generate-aws-inventory --use-letme --account CUENTA --init
 ```
 
-- Genera un inventario con tu perfil de AWS por defecto:
+## Salida
 
-```sh
-./generate-aws-inventory --region us-east-1
+```
+inventory-output/
+├── init-<accountId>-<YYYYMMDD>.csv         # Básico
+├── init-security-<accountId>-<YYYYMMDD>.csv  # Seguridad
+└── init-cost-<accountId>-<YYYYMMDD>.xlsx     # Costos (Excel)
 ```
 
-- Genera un inventario con un perfil de AWS en específico:
+## Enlaces
 
-```sh
-./generate-aws-inventory --account my-sso-profile --region us-east-1
-```
-
-- Genera un inventario con `letme` (requiere de configurar `--setup-totp` primero):
-
-```sh
-./generate-aws-inventory --use-letme --account myaccount --region us-east-1
-```
-
-- Genera un inventario de una sola cuenta en las regiones `us-east-1, us-west-2 y eu-west-1`:
-
-```sh
-./generate-aws-inventory --account myaccount --region us-east-1,us-west-2,eu-west-1
-```
-
-- Genera un inventario a partir de un archivo `.json`:
-
-```sh
-./generate-aws-inventory --use-letme --json accounts.json
-```
-
-- Genera un inventario a partir de un archivo `.csv` con `letme`:
-
-```sh
-./generate-aws-inventory --use-letme --csv accounts.csv
-```
-
-- Genera un inventario de unos servicios específicos:
-
-```sh
-./generate-aws-inventory --account myaccount --services EC2,RDS,S3
-```
-
-- Genera un inventario de todos los servicios:
-
-```sh
-./generate-aws-inventory --account myaccount --services all
-```
-
-- Usa el modo sin logs:
-
-```sh
-./generate-aws-inventory --account myaccount --silent
-```
-
-- Genera descripciones específicas de una carpeta específica:
-
-```sh
-./generate-aws-inventory --describe inventory-output/myaccount-us-east-1-20251003
-```
-
-- Genera descripciones específicas todas las carpetas dentro de una carpeta (recursiva)
-
-```sh
-./generate-aws-inventory --describe inventory-output
-```
-
-- Genera descripciones específicas de un fichero `.csv` específico:
-
-```sh
-./generate-aws-inventory --describe inventory-output/myaccount-us-east-1-20251003/EC2-us-east-1-20251003-myaccount.csv
-```
-
-- Genera descripciones detalladas exhaustivas con tablas estructuradas:
-
-> Servicios soportados: EC2, RDS, RouteTable, SecurityGroup, LoadBalancer, Lambda, VPC, Subnet, NetworkAcl
-
-```sh
-./generate-aws-inventory --describe-harder inventory-output/myaccount-us-east-1-20251003/EC2-us-east-1-20251003-myaccount.csv
-```
-
-### Esquemas de archivos de cuentas:
-
-```json
-{
-  "accounts": [
-    {
-      "name": "account1",
-      "region": "us-east-1"
-    },
-    {
-      "name": "account2",
-      "region": "eu-west-1"
-    }
-  ]
-}
-```
-
-```csv
-account,region
-account1,us-east-1
-account2,eu-west-1
-```
+- [Documentación](docs/docs.md)
+- [letme](https://www.getletme.com/)

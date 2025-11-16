@@ -60,6 +60,14 @@ import {
 } from "./aws-cli";
 import ProgressBar from "progress";
 import { color, getServiceColor } from "../lib/colors";
+import { writeInventoryFile } from "../lib/spreadsheet";
+import {
+  checkEKSVersion,
+  checkLambdaRuntime,
+  checkRDSVersion,
+  checkElastiCacheVersion,
+  formatVersionStatus,
+} from "../lib/version-checker";
 
 /**
  * Inventory output mode types.
@@ -102,6 +110,7 @@ function tagsToString(tags?: Record<string, string>): string | undefined {
  * @property {string} [encrypted] - Encryption status (security mode)
  * @property {string} [vpcId] - VPC ID if applicable (security mode)
  * @property {string} [lastActivity] - Last activity/access timestamp (cost mode)
+ * @property {string} [versionStatus] - Version support status for services with versioning (security mode)
  */
 export interface ConsolidatedResource {
   type: string;
@@ -116,6 +125,7 @@ export interface ConsolidatedResource {
   encrypted?: string;
   vpcId?: string;
   lastActivity?: string;
+  versionStatus?: string;
 }
 
 /**
@@ -275,7 +285,7 @@ function getCSVHeader(mode: InventoryMode): string {
     case "detailed":
       return "Type,Name,Region,ARN,State,Tags,CreatedDate,PublicAccess,Size";
     case "security":
-      return "Type,Name,Region,ARN,State,Encrypted,PublicAccess,VPC";
+      return "Type,Name,Region,ARN,State,Encrypted,PublicAccess,VPC,VersionStatus";
     case "cost":
       return "Type,Name,Region,ARN,State,Size,CreatedDate,LastActivity";
   }
@@ -331,6 +341,7 @@ function resourceToCSVRow(
         escapeCSV(resource.encrypted),
         escapeCSV(resource.publicAccess),
         escapeCSV(resource.vpcId),
+        escapeCSV(resource.versionStatus),
       ].join(",");
     case "cost":
       return [
@@ -349,18 +360,21 @@ function resourceToCSVRow(
  *
  * @param {string} accountId - AWS account ID to inventory
  * @param {InventoryMode} mode - Inventory mode: 'basic', 'detailed', 'security', or 'cost'
- * @param {() => Promise<void>} [refreshCredentials] - Optional callback to refresh AWS credentials during long operations
  * @param {boolean} [silent=false] - If true, suppresses progress output
+ * @param {string} [format='csv'] - Export format: 'csv', 'xlsx', or 'both'
+ * @param {string[]} [limitRegions] - Optional array of regions to limit the scan to
  * @returns {Promise<void>}
  * @throws {Error} If unable to retrieve regions or resources
  *
  * @example
- * await generateInitInventory('123456789012', 'basic', false);
+ * await generateInitInventory('123456789012', 'basic', false, 'csv');
  * @example
  * await generateInitInventory(
  *   '123456789012',
  *   'detailed',
- *   false
+ *   false,
+ *   'csv',
+ *   ['us-east-1', 'us-west-2']
  * );
  * // Creates: inventory-output/init-detailed-123456789012-20251115.csv
  */
@@ -368,6 +382,8 @@ export async function generateInitInventory(
   accountId: string,
   mode: InventoryMode = "basic",
   silent: boolean = false,
+  format: string = "csv",
+  limitRegions?: string[],
 ): Promise<void> {
   const log = !silent ? console.log : () => {};
   const allResources: ConsolidatedResource[] = [];
@@ -378,12 +394,23 @@ export async function generateInitInventory(
     ),
   );
 
-  const regions = await getAllRegions();
-  log(
-    color.info(
-      `Found ${color.bold(regions.length.toString())} enabled regions\n`,
-    ),
-  );
+  let regions = await getAllRegions();
+
+  // Filter regions if limitRegions is provided
+  if (limitRegions && limitRegions.length > 0) {
+    regions = regions.filter((region) => limitRegions.includes(region));
+    log(
+      color.info(
+        `Limiting scan to ${color.bold(regions.length.toString())} region(s): ${color.bold(regions.join(", "))}\n`,
+      ),
+    );
+  } else {
+    log(
+      color.info(
+        `Found ${color.bold(regions.length.toString())} enabled regions\n`,
+      ),
+    );
+  }
 
   const globalServicesProcessed = {
     S3: false,
@@ -451,6 +478,13 @@ export async function generateInitInventory(
           ? `${rds.instanceClass} (${rds.storageSize}GB)`
           : undefined;
 
+        // Check version status for security mode
+        let versionStatus: string | undefined = undefined;
+        if (mode === "security" && rds.engineVersion) {
+          const versionCheck = checkRDSVersion(rds.engine, rds.engineVersion);
+          versionStatus = formatVersionStatus(versionCheck);
+        }
+
         allResources.push({
           type: "RDS",
           name: rds.name !== "N/A" ? rds.name : rds.id,
@@ -464,6 +498,7 @@ export async function generateInitInventory(
           encrypted: rds.encrypted ? "Yes" : "No",
           vpcId: rds.vpcId,
           lastActivity: undefined,
+          versionStatus,
         });
       }
       updateProgress(`RDS (${region})`);
@@ -556,6 +591,13 @@ export async function generateInitInventory(
           ? `${func.memorySize}MB (${func.timeout}s timeout)`
           : undefined;
 
+        // Check runtime version status for security mode
+        let versionStatus: string | undefined = undefined;
+        if (mode === "security" && func.runtime) {
+          const versionCheck = checkLambdaRuntime(func.runtime);
+          versionStatus = formatVersionStatus(versionCheck);
+        }
+
         allResources.push({
           type: "Lambda",
           name: func.name,
@@ -569,6 +611,7 @@ export async function generateInitInventory(
           encrypted: undefined,
           vpcId: func.vpcId,
           lastActivity: func.lastModified,
+          versionStatus,
         });
       }
       updateProgress(`Lambda (${region})`);
@@ -621,6 +664,13 @@ export async function generateInitInventory(
 
       const eksClusters = await describeEKSClusters(region);
       for (const cluster of eksClusters) {
+        // Check Kubernetes version status for security mode
+        let versionStatus: string | undefined = undefined;
+        if (mode === "security" && cluster.version) {
+          const versionCheck = checkEKSVersion(cluster.version);
+          versionStatus = formatVersionStatus(versionCheck);
+        }
+
         allResources.push({
           type: "EKS",
           name: cluster.name,
@@ -636,6 +686,7 @@ export async function generateInitInventory(
           encrypted: undefined,
           vpcId: undefined,
           lastActivity: undefined,
+          versionStatus,
         });
       }
       updateProgress(`EKS (${region})`);
@@ -983,6 +1034,17 @@ export async function generateInitInventory(
       const elastiCacheClusters = await describeElastiCacheClusters(region);
       for (const cluster of elastiCacheClusters) {
         const clusterArn = `arn:aws:elasticache:${region}:${accountId}:cluster:${cluster.cacheClusterId}`;
+
+        // Check engine version status for security mode
+        let versionStatus: string | undefined = undefined;
+        if (mode === "security" && cluster.engineVersion) {
+          const versionCheck = checkElastiCacheVersion(
+            cluster.engine,
+            cluster.engineVersion,
+          );
+          versionStatus = formatVersionStatus(versionCheck);
+        }
+
         allResources.push({
           type: "ElastiCache",
           name: cluster.cacheClusterId,
@@ -996,6 +1058,7 @@ export async function generateInitInventory(
           encrypted: undefined,
           vpcId: undefined,
           lastActivity: undefined,
+          versionStatus,
         });
       }
       updateProgress(`ElastiCache (${region})`);
@@ -1514,14 +1577,15 @@ export async function generateInitInventory(
   await $`mkdir -p ${outputDir}`;
 
   const modePrefix = mode === "basic" ? "init" : `init-${mode}`;
-  const filename = `${outputDir}/${modePrefix}-${accountId}-${timestamp}.csv`;
+  const basePath = `${outputDir}/${modePrefix}-${accountId}-${timestamp}`;
 
   const csvHeader = getCSVHeader(mode) + "\n";
   const csvRows = allResources
     .map((resource) => resourceToCSVRow(resource, mode))
     .join("\n");
 
-  await Bun.write(filename, csvHeader + csvRows);
+  const csvData = csvHeader + csvRows;
+  await writeInventoryFile(csvData, basePath, format, "Inventory");
 
   const modeDescription =
     mode === "basic"
@@ -1531,6 +1595,8 @@ export async function generateInitInventory(
         : mode === "security"
           ? "security-focused"
           : "cost-optimization";
+
+  const extensions = format === "both" ? ".csv and .xlsx" : `.${format}`;
 
   log(
     "\n" +
@@ -1543,5 +1609,8 @@ export async function generateInitInventory(
       color.bold(allResources.length.toString()),
   );
   log(color.info(`   Inventory mode: `) + color.bold(mode));
-  log(color.info(`   Output file: `) + color.cyan(filename));
+  log(color.info(`   Output format: `) + color.bold(format));
+  log(
+    color.info(`   Output file(s): `) + color.cyan(`${basePath}${extensions}`),
+  );
 }

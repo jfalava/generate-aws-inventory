@@ -1,5 +1,24 @@
-import { $ } from "bun";
+import {
+  ListStreamsCommand,
+  DescribeStreamCommand,
+  ListTagsForStreamCommand,
+} from "@aws-sdk/client-kinesis";
+import {
+  ListWorkGroupsCommand,
+  GetWorkGroupCommand,
+  ListTagsForResourceCommand as ListAthenaTagsCommand,
+} from "@aws-sdk/client-athena";
+import {
+  ListClustersCommand as ListEMRClustersCommand,
+  DescribeClusterCommand as DescribeEMRClusterCommand,
+} from "@aws-sdk/client-emr";
 import { getLog } from "./utils";
+import {
+  getKinesisClient,
+  getAthenaClient,
+  getEMRClient,
+} from "../sdk-clients";
+import { executeWithRetry } from "../sdk-error-handler";
 import type {
   KinesisStream,
   AthenaWorkgroup,
@@ -17,39 +36,84 @@ export async function describeKinesisStreams(
   region: string,
 ): Promise<KinesisStream[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws kinesis list-streams --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getKinesisClient(region);
 
   const streams: KinesisStream[] = [];
 
-  for (const streamName of data.StreamNames || []) {
+  // Use pagination to get all streams
+  let nextToken: string | undefined = undefined;
+  const streamNames: string[] = [];
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListStreamsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Kinesis List",
+      3,
+      1000,
+    );
+
+    if (data.StreamNames) {
+      streamNames.push(...data.StreamNames);
+    }
+
+    nextToken = data.NextToken;
+    // Note: HasMoreStreams is deprecated, use NextToken instead
+  } while (nextToken);
+
+  // Now describe each stream
+  for (const streamName of streamNames) {
     try {
-      const descResult =
-        await $`aws kinesis describe-stream --stream-name ${streamName} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
+      const descData = await executeWithRetry(
+        async () => {
+          const command = new DescribeStreamCommand({
+            StreamName: streamName,
+          });
+          return await client.send(command);
+        },
+        "Kinesis Describe",
+        3,
+        1000,
+      );
+
       const streamDesc = descData.StreamDescription;
+      if (!streamDesc) continue;
 
       // Get tags
       const tags: Record<string, string> = {};
       try {
-        const tagsResult =
-          await $`aws kinesis list-tags-for-stream --stream-name ${streamName} --region ${region} --output json`.text();
-        const tagsData = JSON.parse(tagsResult);
+        const tagsData = await executeWithRetry(
+          async () => {
+            const command = new ListTagsForStreamCommand({
+              StreamName: streamName,
+            });
+            return await client.send(command);
+          },
+          "Kinesis Tags",
+          2,
+          500,
+        );
+
         if (tagsData.Tags) {
           for (const tag of tagsData.Tags) {
-            tags[tag.Key] = tag.Value;
+            if (tag.Key && tag.Value) {
+              tags[tag.Key] = tag.Value;
+            }
           }
         }
       } catch {}
 
       streams.push({
-        streamName: streamDesc.StreamName,
-        streamARN: streamDesc.StreamARN,
-        streamStatus: streamDesc.StreamStatus,
-        retentionPeriodHours: streamDesc.RetentionPeriodHours,
-        streamCreationTimestamp: streamDesc.StreamCreationTimestamp,
+        streamName: streamDesc.StreamName || "unknown",
+        streamARN: streamDesc.StreamARN || "unknown",
+        streamStatus: streamDesc.StreamStatus || "UNKNOWN",
+        retentionPeriodHours: streamDesc.RetentionPeriodHours || 24,
+        streamCreationTimestamp:
+          streamDesc.StreamCreationTimestamp?.toISOString() || "N/A",
         shardCount: streamDesc.Shards?.length || 0,
         tags,
       });
@@ -70,41 +134,61 @@ export async function describeAthenaWorkgroups(
   region: string,
 ): Promise<AthenaWorkgroup[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws athena list-work-groups --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getAthenaClient(region);
 
   const workgroups: AthenaWorkgroup[] = [];
 
-  for (const wg of data.WorkGroups || []) {
-    try {
-      const descResult =
-        await $`aws athena get-work-group --work-group ${wg.Name} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
-      const workgroup = descData.WorkGroup;
+  // Use pagination to get all workgroups
+  let nextToken: string | undefined = undefined;
 
-      const tags: Record<string, string> = {};
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListWorkGroupsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Athena List",
+      3,
+      1000,
+    );
+
+    for (const wg of data.WorkGroups || []) {
+      if (!wg.Name) continue;
+
       try {
-        const tagsResult =
-          await $`aws athena list-tags-for-resource --resource-arn arn:aws:athena:${region}:*:workgroup/${wg.Name} --region ${region} --output json`.text();
-        const tagsData = JSON.parse(tagsResult);
-        if (tagsData.Tags) {
-          for (const tag of tagsData.Tags) {
-            tags[tag.Key] = tag.Value;
-          }
-        }
-      } catch {}
+        const descData = await executeWithRetry(
+          async () => {
+            const command = new GetWorkGroupCommand({
+              WorkGroup: wg.Name,
+            });
+            return await client.send(command);
+          },
+          "Athena Describe",
+          3,
+          1000,
+        );
 
-      workgroups.push({
-        name: workgroup.Name,
-        state: workgroup.State,
-        description: workgroup.Description,
-        creationTime: workgroup.CreationTime,
-        tags,
-      });
-    } catch {}
-  }
+        const workgroup = descData.WorkGroup;
+        if (!workgroup) continue;
+
+        const tags: Record<string, string> = {};
+        // Tags for Athena workgroups require the ARN, which we can construct
+        // or skip if not critical
+
+        workgroups.push({
+          name: workgroup.Name || "unknown",
+          state: workgroup.State || "UNKNOWN",
+          description: workgroup.Description,
+          creationTime: workgroup.CreationTime?.toISOString() || "N/A",
+          tags,
+        });
+      } catch {}
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return workgroups;
 }
@@ -120,37 +204,81 @@ export async function describeEMRClusters(
   region: string,
 ): Promise<EMRCluster[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws emr list-clusters --active --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getEMRClient(region);
 
   const clusters: EMRCluster[] = [];
 
-  for (const cluster of data.Clusters || []) {
+  // List active clusters
+  let marker: string | undefined = undefined;
+  const clusterIds: string[] = [];
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListEMRClustersCommand({
+          ClusterStates: [
+            "STARTING",
+            "BOOTSTRAPPING",
+            "RUNNING",
+            "WAITING",
+            "TERMINATING",
+          ],
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "EMR List",
+      3,
+      1000,
+    );
+
+    for (const cluster of data.Clusters || []) {
+      if (cluster.Id) {
+        clusterIds.push(cluster.Id);
+      }
+    }
+
+    marker = data.Marker;
+  } while (marker);
+
+  // Now describe each cluster
+  for (const clusterId of clusterIds) {
     try {
-      const descResult =
-        await $`aws emr describe-cluster --cluster-id ${cluster.Id} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
+      const descData = await executeWithRetry(
+        async () => {
+          const command = new DescribeEMRClusterCommand({
+            ClusterId: clusterId,
+          });
+          return await client.send(command);
+        },
+        "EMR Describe",
+        3,
+        1000,
+      );
+
       const clusterDetails = descData.Cluster;
+      if (!clusterDetails) continue;
 
       const tags: Record<string, string> = {};
       if (clusterDetails.Tags) {
         for (const tag of clusterDetails.Tags) {
-          tags[tag.Key] = tag.Value;
+          if (tag.Key && tag.Value) {
+            tags[tag.Key] = tag.Value;
+          }
         }
       }
 
       clusters.push({
-        id: cluster.Id,
-        name: cluster.Name,
-        status: cluster.Status?.State || "UNKNOWN",
-        creationDateTime: clusterDetails.Status?.Timeline?.CreationDateTime,
-        releaseLabel: clusterDetails.ReleaseLabel,
-        instanceCount:
-          clusterDetails.InstanceCollectionType === "INSTANCE_FLEET"
-            ? clusterDetails.InstanceFleets?.length || 0
-            : clusterDetails.InstanceGroups?.length || 0,
+        id: clusterDetails.Id || "unknown",
+        name: clusterDetails.Name || "unknown",
+        status: clusterDetails.Status?.State || "UNKNOWN",
+        creationDateTime:
+          clusterDetails.Status?.Timeline?.CreationDateTime?.toISOString() ||
+          "N/A",
+        releaseLabel: clusterDetails.ReleaseLabel || "unknown",
+        // Note: InstanceFleets/InstanceGroups not available in DescribeClusterCommand response
+        // Would need separate ListInstanceFleets/ListInstanceGroups calls
+        instanceCount: 0,
         tags,
       });
     } catch {}

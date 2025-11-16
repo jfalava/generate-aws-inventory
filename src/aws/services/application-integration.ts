@@ -1,5 +1,8 @@
-import { $ } from "bun";
+import { ListQueuesCommand } from "@aws-sdk/client-sqs";
+import { ListTopicsCommand } from "@aws-sdk/client-sns";
 import { getLog } from "./utils";
+import { getSQSClient, getSNSClient } from "../sdk-clients";
+import { executeWithRetry } from "../sdk-error-handler";
 import type { SQSQueue, SNSTopic } from "../aws-cli.types";
 
 /**
@@ -10,25 +13,36 @@ import type { SQSQueue, SNSTopic } from "../aws-cli.types";
  */
 export async function describeSQSQueues(region: string): Promise<SQSQueue[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws sqs list-queues --region ${region} --output json`.text();
-
-  if (!result || result.trim() === "") {
-    return [];
-  }
-
-  const data = JSON.parse(result);
+  const client = getSQSClient(region);
 
   const queues: SQSQueue[] = [];
 
-  for (const queueUrl of data.QueueUrls || []) {
-    const queueName = queueUrl.split("/").pop() || queueUrl;
-    queues.push({
-      queueUrl,
-      queueName,
-    });
-  }
+  // Use pagination to get all queues
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListQueuesCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "SQS",
+      3,
+      1000,
+    );
+
+    for (const queueUrl of data.QueueUrls || []) {
+      const queueName = queueUrl.split("/").pop() || queueUrl;
+      queues.push({
+        queueUrl,
+        queueName,
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return queues;
 }
@@ -41,27 +55,37 @@ export async function describeSQSQueues(region: string): Promise<SQSQueue[]> {
  */
 export async function describeSNSTopics(region: string): Promise<SNSTopic[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws sns list-topics --region ${region} --output json`.text();
-
-  // Handle empty response - when no topics exist, AWS CLI may return empty string
-  if (!result || result.trim() === "") {
-    return [];
-  }
-
-  const data = JSON.parse(result);
+  const client = getSNSClient(region);
 
   const topics: SNSTopic[] = [];
 
-  for (const topic of data.Topics || []) {
-    const topicArn = topic.TopicArn;
-    const topicName = topicArn.split(":").pop() || topicArn;
-    topics.push({
-      topicArn,
-      topicName,
-    });
-  }
+  // Use pagination to get all topics
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListTopicsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "SNS",
+      3,
+      1000,
+    );
+
+    for (const topic of data.Topics || []) {
+      const topicArn = topic.TopicArn || "unknown";
+      const topicName = topicArn.split(":").pop() || topicArn;
+      topics.push({
+        topicArn,
+        topicName,
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return topics;
 }

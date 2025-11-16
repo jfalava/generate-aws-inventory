@@ -1,4 +1,6 @@
-import { $ } from "bun";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { EC2Client, DescribeRegionsCommand } from "@aws-sdk/client-ec2";
+import { getCredentialsProvider } from "../credentials";
 
 let log = console.log;
 let verbose = false;
@@ -23,9 +25,18 @@ export function getLog() {
  * console.log(`Account ID: ${accountId}`);
  */
 export async function getAccountId(): Promise<string> {
-  const result =
-    await $`aws sts get-caller-identity --query Account --output text`.text();
-  return result.trim();
+  const client = new STSClient({
+    credentials: getCredentialsProvider(),
+  });
+
+  const command = new GetCallerIdentityCommand({});
+  const response = await client.send(command);
+
+  if (!response.Account) {
+    throw new Error("Unable to retrieve AWS account ID");
+  }
+
+  return response.Account;
 }
 
 /**
@@ -40,8 +51,15 @@ export async function getAccountId(): Promise<string> {
  * console.log(`Found ${regions.length} regions: ${regions.join(', ')}`);
  */
 export async function getAllRegions(): Promise<string[]> {
-  const result = await $`aws ec2 describe-regions --output json`.text();
-  const data = JSON.parse(result);
+  const client = new EC2Client({
+    credentials: getCredentialsProvider(),
+    region: "us-east-1", // Region doesn't matter for describe-regions
+  });
 
-  return (data.Regions || []).map((region: any) => region.RegionName);
+  const command = new DescribeRegionsCommand({});
+  const response = await client.send(command);
+
+  return (response.Regions || [])
+    .map((region) => region.RegionName || "")
+    .filter(Boolean);
 }

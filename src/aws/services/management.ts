@@ -1,4 +1,35 @@
-import { $ } from "bun";
+import {
+  DescribeAlarmsCommand,
+  type MetricAlarm,
+} from "@aws-sdk/client-cloudwatch";
+import {
+  ListDistributionsCommand,
+  type DistributionSummary,
+} from "@aws-sdk/client-cloudfront";
+import {
+  ListHostedZonesCommand,
+  type HostedZone,
+} from "@aws-sdk/client-route-53";
+import {
+  DescribeStacksCommand,
+  type Stack,
+} from "@aws-sdk/client-cloudformation";
+import { GetRestApisCommand, type RestApi } from "@aws-sdk/client-api-gateway";
+import {
+  ListStateMachinesCommand,
+  type StateMachineListItem,
+} from "@aws-sdk/client-sfn";
+import { ListRulesCommand, type Rule } from "@aws-sdk/client-eventbridge";
+import {
+  ListTrailsCommand,
+  DescribeTrailsCommand,
+  type Trail,
+  type TrailInfo,
+} from "@aws-sdk/client-cloudtrail";
+import {
+  DescribeParametersCommand,
+  type ParameterMetadata,
+} from "@aws-sdk/client-ssm";
 import { getLog } from "./utils";
 import type {
   CloudWatchAlarm,
@@ -11,28 +42,56 @@ import type {
   CloudTrail,
   SSMParameter,
 } from "../aws-cli.types";
+import {
+  getCloudWatchClient,
+  getCloudFrontClient,
+  getRoute53Client,
+  getCloudFormationClient,
+  getAPIGatewayClient,
+  getStepFunctionsClient,
+  getEventBridgeClient,
+  getCloudTrailClient,
+  getSSMClient,
+} from "../sdk-clients";
+import { executeWithRetry } from "../sdk-error-handler";
 
 export async function describeCloudWatchAlarms(
   region: string,
 ): Promise<CloudWatchAlarm[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws cloudwatch describe-alarms --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getCloudWatchClient(region);
 
   const alarms: CloudWatchAlarm[] = [];
 
-  for (const alarm of data.MetricAlarms || []) {
-    alarms.push({
-      alarmName: alarm.AlarmName,
-      alarmDescription: alarm.AlarmDescription || "N/A",
-      stateValue: alarm.StateValue,
-      stateReason: alarm.StateReason,
-      metricName: alarm.MetricName,
-      namespace: alarm.Namespace,
-    });
-  }
+  // Use pagination to get all alarms
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new DescribeAlarmsCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "CloudWatch",
+      3,
+      1000,
+    );
+
+    for (const alarm of data.MetricAlarms || []) {
+      alarms.push({
+        alarmName: alarm.AlarmName || "unknown",
+        alarmDescription: alarm.AlarmDescription || "N/A",
+        stateValue: alarm.StateValue || "UNKNOWN",
+        stateReason: alarm.StateReason || "N/A",
+        metricName: alarm.MetricName || "N/A",
+        namespace: alarm.Namespace || "N/A",
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return alarms;
 }
@@ -41,23 +100,38 @@ export async function describeCloudFrontDistributions(): Promise<
   CloudFrontDistribution[]
 > {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws cloudfront list-distributions --output json`.text();
-  if (!result.trim()) {
-    return [];
-  }
-  const data = JSON.parse(result);
+  const client = getCloudFrontClient();
 
   const distributions: CloudFrontDistribution[] = [];
 
-  for (const item of data.DistributionList?.Items || []) {
-    distributions.push({
-      id: item.Id,
-      domainName: item.DomainName,
-      status: item.Status,
-      enabled: item.Enabled,
-    });
+  // Use pagination to get all distributions
+  let marker: string | undefined = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListDistributionsCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "CloudFront",
+      3,
+      1000,
+    );
+
+    for (const item of data.DistributionList?.Items || []) {
+      distributions.push({
+        id: item.Id || "unknown",
+        domainName: item.DomainName || "unknown",
+        status: item.Status || "UNKNOWN",
+        enabled: item.Enabled || false,
+      });
+    }
+
+    isTruncated = data.DistributionList?.IsTruncated || false;
+    marker = data.DistributionList?.NextMarker;
   }
 
   return distributions;
@@ -67,18 +141,37 @@ export async function describeRoute53HostedZones(): Promise<
   Route53HostedZone[]
 > {
   const { log, verbose } = getLog();
-
-  const result = await $`aws route53 list-hosted-zones --output json`.text();
-  const data = JSON.parse(result);
+  const client = getRoute53Client();
 
   const zones: Route53HostedZone[] = [];
 
-  for (const zone of data.HostedZones || []) {
-    zones.push({
-      id: zone.Id,
-      name: zone.Name,
-      privateZone: zone.Config?.PrivateZone || false,
-    });
+  // Use pagination to get all hosted zones
+  let marker: string | undefined = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListHostedZonesCommand({
+          Marker: marker,
+        });
+        return await client.send(command);
+      },
+      "Route53",
+      3,
+      1000,
+    );
+
+    for (const zone of data.HostedZones || []) {
+      zones.push({
+        id: zone.Id || "unknown",
+        name: zone.Name || "unknown",
+        privateZone: zone.Config?.PrivateZone || false,
+      });
+    }
+
+    isTruncated = data.IsTruncated || false;
+    marker = data.NextMarker;
   }
 
   return zones;
@@ -88,30 +181,48 @@ export async function describeCloudFormationStacks(
   region: string,
 ): Promise<CloudFormationStack[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws cloudformation describe-stacks --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getCloudFormationClient(region);
 
   const stacks: CloudFormationStack[] = [];
 
-  for (const stack of data.Stacks || []) {
-    const tags: Record<string, string> = {};
-    if (stack.Tags) {
-      for (const tag of stack.Tags) {
-        tags[tag.Key] = tag.Value;
+  // Use pagination to get all stacks
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new DescribeStacksCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "CloudFormation",
+      3,
+      1000,
+    );
+
+    for (const stack of data.Stacks || []) {
+      const tags: Record<string, string> = {};
+      if (stack.Tags) {
+        for (const tag of stack.Tags) {
+          if (tag.Key && tag.Value) {
+            tags[tag.Key] = tag.Value;
+          }
+        }
       }
+
+      stacks.push({
+        stackName: stack.StackName || "unknown",
+        stackId: stack.StackId || "unknown",
+        stackStatus: stack.StackStatus || "UNKNOWN",
+        creationTime: stack.CreationTime?.toISOString() || "N/A",
+        lastUpdatedTime: stack.LastUpdatedTime?.toISOString() || "N/A",
+        tags,
+      });
     }
 
-    stacks.push({
-      stackName: stack.StackName,
-      stackId: stack.StackId,
-      stackStatus: stack.StackStatus,
-      creationTime: stack.CreationTime,
-      lastUpdatedTime: stack.LastUpdatedTime,
-      tags,
-    });
-  }
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return stacks;
 }
@@ -120,25 +231,41 @@ export async function describeAPIGateways(
   region: string,
 ): Promise<APIGateway[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws apigateway get-rest-apis --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getAPIGatewayClient(region);
 
   const apis: APIGateway[] = [];
 
-  for (const api of data.items || []) {
-    const tags: Record<string, string> = api.tags || {};
+  // Use pagination to get all REST APIs
+  let position: string | undefined = undefined;
 
-    apis.push({
-      id: api.id,
-      name: api.name,
-      protocolType: "REST",
-      apiEndpoint: api.endpoint,
-      createdDate: api.createdDate,
-      tags,
-    });
-  }
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new GetRestApisCommand({
+          position: position,
+        });
+        return await client.send(command);
+      },
+      "API Gateway",
+      3,
+      1000,
+    );
+
+    for (const api of data.items || []) {
+      const tags: Record<string, string> = api.tags || {};
+
+      apis.push({
+        id: api.id || "unknown",
+        name: api.name || "unknown",
+        protocolType: "REST",
+        apiEndpoint: api.endpointConfiguration?.types?.[0] || "N/A",
+        createdDate: api.createdDate?.toISOString() || "N/A",
+        tags,
+      });
+    }
+
+    position = data.position;
+  } while (position);
 
   return apis;
 }
@@ -153,22 +280,38 @@ export async function describeStepFunctions(
   region: string,
 ): Promise<StepFunction[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws stepfunctions list-state-machines --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getStepFunctionsClient(region);
 
   const stateMachines: StepFunction[] = [];
 
-  for (const sm of data.stateMachines || []) {
-    stateMachines.push({
-      stateMachineArn: sm.stateMachineArn,
-      name: sm.name,
-      type: sm.type,
-      status: sm.status || "ACTIVE",
-      creationDate: sm.creationDate,
-    });
-  }
+  // Use pagination to get all state machines
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListStateMachinesCommand({
+          nextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "Step Functions",
+      3,
+      1000,
+    );
+
+    for (const sm of data.stateMachines || []) {
+      stateMachines.push({
+        stateMachineArn: sm.stateMachineArn || "unknown",
+        name: sm.name || "unknown",
+        type: sm.type || "STANDARD",
+        status: "ACTIVE", // Status is only available in DescribeStateMachine
+        creationDate: sm.creationDate?.toISOString() || "N/A",
+      });
+    }
+
+    nextToken = data.nextToken;
+  } while (nextToken);
 
   return stateMachines;
 }
@@ -183,22 +326,38 @@ export async function describeEventBridgeRules(
   region: string,
 ): Promise<EventBridgeRule[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws events list-rules --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getEventBridgeClient(region);
 
   const rules: EventBridgeRule[] = [];
 
-  for (const rule of data.Rules || []) {
-    rules.push({
-      name: rule.Name,
-      arn: rule.Arn,
-      state: rule.State,
-      description: rule.Description,
-      eventPattern: rule.EventPattern,
-    });
-  }
+  // Use pagination to get all rules
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListRulesCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "EventBridge",
+      3,
+      1000,
+    );
+
+    for (const rule of data.Rules || []) {
+      rules.push({
+        name: rule.Name || "unknown",
+        arn: rule.Arn || "unknown",
+        state: rule.State || "UNKNOWN",
+        description: rule.Description || "N/A",
+        eventPattern: rule.EventPattern || "N/A",
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return rules;
 }
@@ -213,30 +372,68 @@ export async function describeCloudTrails(
   region: string,
 ): Promise<CloudTrail[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws cloudtrail list-trails --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getCloudTrailClient(region);
 
   const trails: CloudTrail[] = [];
 
-  for (const trail of data.Trails || []) {
-    try {
-      const descResult =
-        await $`aws cloudtrail describe-trails --trail-name-list ${trail.Name} --region ${region} --output json`.text();
-      const descData = JSON.parse(descResult);
+  // Use pagination to get all trail ARNs
+  let nextToken: string | undefined = undefined;
+  const trailNames: string[] = [];
 
-      if (descData.trailList?.length > 0) {
-        const trailInfo = descData.trailList[0];
-        trails.push({
-          name: trailInfo.Name,
-          trailARN: trailInfo.TrailARN,
-          homeRegion: trailInfo.HomeRegion,
-          isMultiRegionTrail: trailInfo.IsMultiRegionTrail,
-          isOrganizationTrail: trailInfo.IsOrganizationTrail,
-          s3BucketName: trailInfo.S3BucketName,
-          logFileValidationEnabled: trailInfo.LogFileValidationEnabled,
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new ListTrailsCommand({
+          NextToken: nextToken,
         });
+        return await client.send(command);
+      },
+      "CloudTrail List",
+      3,
+      1000,
+    );
+
+    // Extract trail names from the Trails array
+    if (data.Trails) {
+      for (const trail of data.Trails) {
+        if (trail.Name) {
+          trailNames.push(trail.Name);
+        }
+      }
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
+
+  // Now describe each trail (API allows multiple trail names)
+  for (const trailName of trailNames) {
+    try {
+      const descData = await executeWithRetry(
+        async () => {
+          const command = new DescribeTrailsCommand({
+            trailNameList: [trailName],
+          });
+          return await client.send(command);
+        },
+        "CloudTrail Describe",
+        3,
+        1000,
+      );
+
+      if (descData.trailList && descData.trailList.length > 0) {
+        const trailInfo = descData.trailList[0];
+        if (trailInfo) {
+          trails.push({
+            name: trailInfo.Name || "unknown",
+            trailARN: trailInfo.TrailARN || "unknown",
+            homeRegion: trailInfo.HomeRegion || "N/A",
+            isMultiRegionTrail: trailInfo.IsMultiRegionTrail || false,
+            isOrganizationTrail: trailInfo.IsOrganizationTrail || false,
+            s3BucketName: trailInfo.S3BucketName || "N/A",
+            logFileValidationEnabled:
+              trailInfo.LogFileValidationEnabled || false,
+          });
+        }
       }
     } catch {}
   }
@@ -254,22 +451,38 @@ export async function describeSSMParameters(
   region: string,
 ): Promise<SSMParameter[]> {
   const { log, verbose } = getLog();
-
-  const result =
-    await $`aws ssm describe-parameters --region ${region} --output json`.text();
-  const data = JSON.parse(result);
+  const client = getSSMClient(region);
 
   const parameters: SSMParameter[] = [];
 
-  for (const param of data.Parameters || []) {
-    parameters.push({
-      name: param.Name,
-      type: param.Type,
-      version: param.Version,
-      lastModifiedDate: param.LastModifiedDate,
-      arn: param.ARN,
-    });
-  }
+  // Use pagination to get all parameters
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const data = await executeWithRetry(
+      async () => {
+        const command = new DescribeParametersCommand({
+          NextToken: nextToken,
+        });
+        return await client.send(command);
+      },
+      "SSM",
+      3,
+      1000,
+    );
+
+    for (const param of data.Parameters || []) {
+      parameters.push({
+        name: param.Name || "unknown",
+        type: param.Type || "UNKNOWN",
+        version: param.Version || 0,
+        lastModifiedDate: param.LastModifiedDate?.toISOString() || "N/A",
+        arn: param.ARN || "unknown",
+      });
+    }
+
+    nextToken = data.NextToken;
+  } while (nextToken);
 
   return parameters;
 }

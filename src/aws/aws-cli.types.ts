@@ -1,3 +1,6 @@
+/**
+ * Represents an Amazon EC2 instance with its configuration and metadata.
+ */
 export interface EC2Instance {
   id: string;
   name: string;
@@ -11,10 +14,14 @@ export interface EC2Instance {
   encrypted?: boolean;
 }
 
+/**
+ * Represents an Amazon RDS database instance with engine and configuration details.
+ */
 export interface RDSInstance {
   id: string;
   name: string;
   engine: string;
+  engineVersion?: string;
   status: string;
   instanceClass?: string;
   storageSize?: number;
@@ -25,6 +32,9 @@ export interface RDSInstance {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon S3 bucket with security and versioning configuration.
+ */
 export interface S3Bucket {
   name: string;
   creationDate: string;
@@ -35,6 +45,9 @@ export interface S3Bucket {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon Virtual Private Cloud (VPC) network.
+ */
 export interface VPC {
   id: string;
   name: string;
@@ -43,6 +56,9 @@ export interface VPC {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC subnet with IP address allocation and availability zone details.
+ */
 export interface Subnet {
   id: string;
   name: string;
@@ -55,6 +71,9 @@ export interface Subnet {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC security group with firewall rules.
+ */
 export interface SecurityGroup {
   id: string;
   name: string;
@@ -65,6 +84,9 @@ export interface SecurityGroup {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Elastic Load Balancer (Application, Network, or Gateway).
+ */
 export interface LoadBalancer {
   name: string;
   type: string;
@@ -78,6 +100,9 @@ export interface LoadBalancer {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Lambda function with runtime and execution configuration.
+ */
 export interface LambdaFunction {
   name: string;
   runtime: string;
@@ -89,6 +114,9 @@ export interface LambdaFunction {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon DynamoDB table with item count and encryption status.
+ */
 export interface DynamoDBTable {
   name: string;
   status: string;
@@ -99,6 +127,9 @@ export interface DynamoDBTable {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon ECS cluster with task and service counts.
+ */
 export interface ECSCluster {
   name: string;
   status: string;
@@ -109,6 +140,9 @@ export interface ECSCluster {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon EKS Kubernetes cluster with version and endpoint information.
+ */
 export interface EKSCluster {
   name: string;
   status: string;
@@ -119,6 +153,9 @@ export interface EKSCluster {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon CloudFront CDN distribution.
+ */
 export interface CloudFrontDistribution {
   id: string;
   domainName: string;
@@ -126,12 +163,18 @@ export interface CloudFrontDistribution {
   enabled: boolean;
 }
 
+/**
+ * Represents an Amazon Route 53 DNS hosted zone.
+ */
 export interface Route53HostedZone {
   id: string;
   name: string;
   privateZone: boolean;
 }
 
+/**
+ * Represents an AWS IAM user account.
+ */
 export interface IAMUser {
   userName: string;
   userId: string;
@@ -139,6 +182,9 @@ export interface IAMUser {
   createDate: string;
 }
 
+/**
+ * Represents an AWS IAM role for service or user permissions.
+ */
 export interface IAMRole {
   roleName: string;
   roleId: string;
@@ -146,6 +192,9 @@ export interface IAMRole {
   createDate: string;
 }
 
+/**
+ * Represents an Amazon Redshift data warehouse cluster.
+ */
 export interface RedshiftCluster {
   clusterIdentifier: string;
   nodeType: string;
@@ -156,6 +205,9 @@ export interface RedshiftCluster {
   port: number;
 }
 
+/**
+ * Represents an AWS Glue ETL job.
+ */
 export interface GlueJob {
   name: string;
   description: string;
@@ -165,6 +217,9 @@ export interface GlueJob {
   executionProperty: any;
 }
 
+/**
+ * Represents an Amazon OpenSearch Service domain.
+ */
 export interface OpenSearchDomain {
   domainName: string;
   arn: string;
@@ -175,6 +230,9 @@ export interface OpenSearchDomain {
   upgradeProcessing: boolean;
 }
 
+/**
+ * Represents an AWS KMS encryption key.
+ */
 export interface KMSKey {
   keyId: string;
   keyArn: string;
@@ -184,6 +242,9 @@ export interface KMSKey {
   creationDate: string;
 }
 
+/**
+ * Represents an Amazon CloudWatch alarm for monitoring metrics.
+ */
 export interface CloudWatchAlarm {
   alarmName: string;
   alarmDescription: string;
@@ -193,6 +254,9 @@ export interface CloudWatchAlarm {
   namespace: string;
 }
 
+/**
+ * Represents an AWS Secrets Manager secret for storing sensitive data.
+ */
 export interface SecretsManagerSecret {
   name: string;
   description: string;
@@ -201,6 +265,9 @@ export interface SecretsManagerSecret {
   lastChangedDate: string;
 }
 
+/**
+ * Represents an Amazon ECR container image repository.
+ */
 export interface ECRRepository {
   repositoryName: string;
   repositoryArn: string;
@@ -208,6 +275,9 @@ export interface ECRRepository {
   createdAt: string;
 }
 
+/**
+ * Represents a VPC Internet Gateway for outbound internet access.
+ */
 export interface InternetGateway {
   id: string;
   name: string;
@@ -216,6 +286,9 @@ export interface InternetGateway {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC NAT Gateway for private subnet internet access.
+ */
 export interface NatGateway {
   id: string;
   name: string;
@@ -226,6 +299,9 @@ export interface NatGateway {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Elastic IP address allocation.
+ */
 export interface ElasticIP {
   allocationId: string;
   publicIp: string;
@@ -236,6 +312,9 @@ export interface ElasticIP {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a Virtual Private Gateway for VPN connections.
+ */
 export interface VpnGateway {
   id: string;
   name: string;
@@ -245,6 +324,9 @@ export interface VpnGateway {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPN connection between AWS and external network.
+ */
 export interface VpnConnection {
   id: string;
   name: string;
@@ -256,6 +338,9 @@ export interface VpnConnection {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Transit Gateway for multi-VPC and on-premises connectivity.
+ */
 export interface TransitGateway {
   id: string;
   name: string;
@@ -265,6 +350,9 @@ export interface TransitGateway {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC endpoint for private AWS service access.
+ */
 export interface VpcEndpoint {
   id: string;
   name: string;
@@ -275,6 +363,9 @@ export interface VpcEndpoint {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC peering connection between two VPCs.
+ */
 export interface VpcPeeringConnection {
   id: string;
   name: string;
@@ -284,6 +375,9 @@ export interface VpcPeeringConnection {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC Network Access Control List (NACL).
+ */
 export interface NetworkAcl {
   id: string;
   name: string;
@@ -292,6 +386,9 @@ export interface NetworkAcl {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents a VPC route table for network traffic routing.
+ */
 export interface RouteTable {
   id: string;
   name: string;
@@ -300,6 +397,9 @@ export interface RouteTable {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Elastic Network Interface (ENI).
+ */
 export interface NetworkInterface {
   id: string;
   name: string;
@@ -311,32 +411,46 @@ export interface NetworkInterface {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Control Tower guardrail (control) for governance.
+ * Behavior can be DETECTIVE or PREVENTIVE.
+ */
 export interface ControlTowerGuardrail {
   guardrailArn: string;
   guardrailName: string;
   guardrailState: string;
-  behavior: string; // DETECTIVE or PREVENTIVE
+  behavior: string;
   organizationalUnitArn: string;
 }
 
+/**
+ * Represents an AWS Organizations Service Control Policy (SCP).
+ */
 export interface ServiceControlPolicy {
   id: string;
   arn: string;
   name: string;
   description: string;
-  type: string; // SERVICE_CONTROL_POLICY
+  type: string;
   awsManaged: boolean;
 }
 
+/**
+ * Represents an AWS Config rule for compliance monitoring.
+ * Source can be AWS managed or custom.
+ */
 export interface ConfigRule {
   configRuleName: string;
   configRuleArn: string;
   configRuleId: string;
   description: string;
   complianceStatus: string;
-  source: string; // AWS managed or custom
+  source: string;
 }
 
+/**
+ * Represents an Amazon EBS volume for block storage.
+ */
 export interface EBSVolume {
   volumeId: string;
   name: string;
@@ -350,10 +464,14 @@ export interface EBSVolume {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon ElastiCache cluster (Redis or Memcached).
+ */
 export interface ElastiCacheCluster {
   cacheClusterId: string;
   cacheNodeType: string;
   engine: string;
+  engineVersion?: string;
   cacheClusterStatus: string;
   numCacheNodes: number;
   preferredAvailabilityZone?: string;
@@ -361,6 +479,9 @@ export interface ElastiCacheCluster {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon SQS message queue.
+ */
 export interface SQSQueue {
   queueUrl: string;
   queueName: string;
@@ -368,6 +489,9 @@ export interface SQSQueue {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon SNS notification topic.
+ */
 export interface SNSTopic {
   topicArn: string;
   topicName: string;
@@ -375,6 +499,9 @@ export interface SNSTopic {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an EC2 Auto Scaling group for automatic capacity management.
+ */
 export interface AutoScalingGroup {
   autoScalingGroupName: string;
   minSize: number;
@@ -386,6 +513,9 @@ export interface AutoScalingGroup {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS CloudFormation infrastructure stack.
+ */
 export interface CloudFormationStack {
   stackName: string;
   stackId: string;
@@ -395,6 +525,9 @@ export interface CloudFormationStack {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon EFS elastic file system.
+ */
 export interface EFSFileSystem {
   fileSystemId: string;
   name: string;
@@ -406,6 +539,9 @@ export interface EFSFileSystem {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon API Gateway REST or HTTP API.
+ */
 export interface APIGateway {
   id: string;
   name: string;
@@ -415,6 +551,9 @@ export interface APIGateway {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Step Functions state machine for workflow orchestration.
+ */
 export interface StepFunction {
   stateMachineArn: string;
   name: string;
@@ -424,6 +563,9 @@ export interface StepFunction {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon EventBridge rule for event-driven automation.
+ */
 export interface EventBridgeRule {
   name: string;
   arn: string;
@@ -433,6 +575,9 @@ export interface EventBridgeRule {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS CloudTrail audit log trail.
+ */
 export interface CloudTrail {
   name: string;
   trailARN: string;
@@ -444,6 +589,9 @@ export interface CloudTrail {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Systems Manager Parameter Store parameter.
+ */
 export interface SSMParameter {
   name: string;
   type: string;
@@ -454,6 +602,9 @@ export interface SSMParameter {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS Backup vault for storing backup recovery points.
+ */
 export interface BackupVault {
   backupVaultName: string;
   backupVaultArn: string;
@@ -464,6 +615,9 @@ export interface BackupVault {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon Cognito user pool for authentication.
+ */
 export interface CognitoUserPool {
   id: string;
   name: string;
@@ -474,6 +628,9 @@ export interface CognitoUserPool {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an AWS WAF web application firewall access control list.
+ */
 export interface WAFWebACL {
   name: string;
   id: string;
@@ -484,6 +641,9 @@ export interface WAFWebACL {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon GuardDuty threat detection detector.
+ */
 export interface GuardDutyDetector {
   detectorId: string;
   status: string;
@@ -492,6 +652,9 @@ export interface GuardDutyDetector {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon Kinesis data stream for real-time data processing.
+ */
 export interface KinesisStream {
   streamName: string;
   streamARN: string;
@@ -502,6 +665,9 @@ export interface KinesisStream {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon Athena workgroup for SQL query execution.
+ */
 export interface AthenaWorkgroup {
   name: string;
   state: string;
@@ -510,6 +676,9 @@ export interface AthenaWorkgroup {
   tags?: Record<string, string>;
 }
 
+/**
+ * Represents an Amazon EMR big data processing cluster.
+ */
 export interface EMRCluster {
   id: string;
   name: string;

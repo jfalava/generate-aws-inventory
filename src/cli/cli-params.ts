@@ -25,6 +25,8 @@ import { color } from "../lib/colors";
  * @property {boolean} init-detailed - Flag to create detailed inventory with State, Tags, CreatedDate, PublicAccess, Size
  * @property {boolean} init-security - Flag to create security-focused inventory with Encrypted, PublicAccess, VPC info
  * @property {boolean} init-cost - Flag to create cost-optimization inventory with Size, CreatedDate, LastActivity
+ * @property {string} export-format - Output file format for inventory files (csv, xlsx, both)
+ * @property {string} [limit-regions] - Comma-separated list of regions to limit init inventory scans (e.g., us-east-1,us-west-2)
  */
 export interface ParsedArgs {
   account?: string;
@@ -46,6 +48,8 @@ export interface ParsedArgs {
   "init-detailed": boolean;
   "init-security": boolean;
   "init-cost": boolean;
+  "export-format": string;
+  "limit-regions"?: string;
 }
 
 /**
@@ -196,6 +200,15 @@ export function parseCliArgs(args: string[]): ParsedArgs {
       "Create cost-optimization inventory across all regions: State, Size, CreatedDate, LastActivity. Helps identify unused or oversized resources.",
       false,
     )
+    .option(
+      "--export-format <FORMAT>",
+      "Output file format for inventory files (csv, xlsx, both). Default: csv.",
+      "csv",
+    )
+    .option(
+      "--limit-regions <REGIONS>",
+      "Limit init inventory to specific regions (comma-separated list, e.g., us-east-1,us-west-2). Only works with init modes.",
+    )
     .option("-h, --help", "Show this help message.", false)
     .option("-e, --help-examples", "Show examples and file formats.", false)
     .allowUnknownOption(false)
@@ -225,6 +238,8 @@ export function parseCliArgs(args: string[]): ParsedArgs {
       "init-detailed": options.initDetailed,
       "init-security": options.initSecurity,
       "init-cost": options.initCost,
+      "export-format": options.exportFormat,
+      "limit-regions": options.limitRegions,
     };
   } catch (error) {
     const cmdPrefix = getCommandPrefix();
@@ -255,6 +270,8 @@ ${color.cyan("OPTIONS:")}
   ${color.yellow("--init-detailed")}                    ${color.muted("Detailed inventory with State, Tags, CreatedDate, PublicAccess, Size. Comprehensive overview.")}
   ${color.yellow("--init-security")}                    ${color.muted("Security-focused inventory with Encrypted, PublicAccess, VPC. For security auditing.")}
   ${color.yellow("--init-cost")}                        ${color.muted("Cost-optimization inventory with Size, CreatedDate, LastActivity. Identify unused resources.")}
+  ${color.yellow("--export-format")} ${color.dim("<FORMAT>")}           ${color.muted("Output file format for inventory files (csv, xlsx, both). Default: csv.")}
+  ${color.yellow("--limit-regions")} ${color.dim("<REGIONS>")}          ${color.muted("Limit init inventory to specific regions (comma-separated list, e.g., us-east-1,us-west-2). Only works with init modes.")}
  `);
     process.exit(1);
   }
@@ -296,6 +313,8 @@ ${color.cyan("OPTIONS:")}
   ${color.yellow("--init-detailed")}                    ${color.muted("Detailed inventory with State, Tags, CreatedDate, PublicAccess, Size. Comprehensive overview.")}
   ${color.yellow("--init-security")}                    ${color.muted("Security-focused inventory with Encrypted, PublicAccess, VPC. For security auditing.")}
   ${color.yellow("--init-cost")}                        ${color.muted("Cost-optimization inventory with Size, CreatedDate, LastActivity. Identify unused resources.")}
+  ${color.yellow("--export-format")} ${color.dim("<FORMAT>")}           ${color.muted("Output file format for inventory files (csv, xlsx, both). Default: csv.")}
+  ${color.yellow("--limit-regions")} ${color.dim("<REGIONS>")}          ${color.muted("Limit init inventory to specific regions (comma-separated list, e.g., us-east-1,us-west-2). Only works with init modes.")}
   ${color.yellow("-h, --help")}                         ${color.muted("Show this help message.")}
   ${color.yellow("-e, --help-examples")}                ${color.muted("Show examples and file formats.")}
 `);
@@ -379,6 +398,18 @@ ${color.cyan("EXAMPLES:")}
 
   ${color.muted("Create cost-optimization inventory to find unused resources:")}
     ${color.green(cmdPrefix)} ${color.yellow("--use-letme --account")} myaccount ${color.yellow("--init-cost")}
+
+  ${color.muted("Create comprehensive inventory limited to specific regions:")}
+    ${color.green(cmdPrefix)} ${color.yellow("--init --limit-regions")} us-east-1,us-west-2
+
+  ${color.muted("Create detailed inventory for only production regions:")}
+    ${color.green(cmdPrefix)} ${color.yellow("--profile")} prod-account ${color.yellow("--init-detailed --limit-regions")} us-east-1,eu-west-1,ap-southeast-1
+
+  ${color.muted("Generate inventory as Excel spreadsheet:")}
+    ${color.green(cmdPrefix)} ${color.yellow("--account")} myaccount ${color.yellow("--region")} us-east-1 ${color.yellow("--export-format")} xlsx
+
+  ${color.muted("Generate inventory in both CSV and Excel formats:")}
+    ${color.green(cmdPrefix)} ${color.yellow("--init --export-format")} both
 
 ${color.cyan("FILE FORMATS:")}
   ${color.muted("JSON config file:")}
