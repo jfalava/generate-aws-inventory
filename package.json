@@ -1,6 +1,6 @@
 {
   "name": "@jfalava/generate-aws-inventory",
-  "version": "0.2",
+  "version": "0.3",
   "description": "Aplicación para generar el inventario de una cuenta de AWS dado una entrada de letme y una región",
   "module": "./src/app.ts",
   "type": "module",
