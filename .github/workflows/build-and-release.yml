@@ -75,79 +75,38 @@ jobs:
       - name: Delete existing release if exists
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag_name.outputs.TAG }}"
-          RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" \
-            | jq -r '.id')
-          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
-            echo "Deleting existing release $RELEASE_ID for tag $TAG"
-            curl -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
-          else
-            echo "No existing release found for tag $TAG"
-          fi
+          gh release delete "$TAG" --yes || echo "No existing release to delete"
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Create Release and Upload Assets
         env:
-          GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.tag_name.outputs.TAG }}
-          release_name: Release ${{ steps.tag_name.outputs.TAG }}
-          draft: false
-          prerelease: false
-          body: |
-            ## AWS Inventory Generator ${{ steps.tag_name.outputs.TAG }}
+          GH_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag_name.outputs.TAG }}"
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes "## AWS Inventory Generator $TAG
 
-            ### Downloads
+          ### Downloads
 
-            Choose the appropriate build for your platform:
-            - **Windows x64**: `generate-aws-inventory-windows-x64.zip`
-            - **Linux x64**: `generate-aws-inventory-linux-x64.zip`
-            - **macOS ARM**: `generate-aws-inventory-macos-arm.zip`
+          Choose the appropriate build for your platform:
+          - **Windows x64**: \`generate-aws-inventory-windows-x64.zip\`
+          - **Linux x64**: \`generate-aws-inventory-linux-x64.zip\`
+          - **macOS ARM**: \`generate-aws-inventory-macos-arm.zip\`
 
-            ### Installation
+          ### Installation
 
-            1. Download the zip file for your platform
-            2. Extract the executable
-            3. Run with `--help` to see available options
+          1. Download the zip file for your platform
+          2. Extract the executable
+          3. Run with \`--help\` to see available options
 
-            ### Requirements
+          ### Requirements
 
-            - AWS CLI installed and configured
-            - For MFA authentication: `letme` tool installed
+          - For MFA authentication: \`letme\` tool installed
 
-            See the [README](https://github.com/${{ github.repository }}) for full documentation.
-
-      - name: Upload Windows x64 Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/generate-aws-inventory-windows-x64.zip
-          asset_name: generate-aws-inventory-windows-x64.zip
-          asset_content_type: application/zip
-
-      - name: Upload Linux x64 Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/generate-aws-inventory-linux-x64.zip
-          asset_name: generate-aws-inventory-linux-x64.zip
-          asset_content_type: application/zip
-
-      - name: Upload macOS ARM Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/generate-aws-inventory-macos-arm.zip
-          asset_name: generate-aws-inventory-macos-arm.zip
-          asset_content_type: application/zip
+          See the [README](https://github.com/${{ github.repository }}) for full documentation." \
+            ./dist/generate-aws-inventory-windows-x64.zip \
+            ./dist/generate-aws-inventory-linux-x64.zip \
+            ./dist/generate-aws-inventory-macos-arm.zip
