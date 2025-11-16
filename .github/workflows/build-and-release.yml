@@ -62,11 +62,14 @@ jobs:
       - name: Create tag if needed
         run: |
           TAG="${{ steps.tag_name.outputs.TAG }}"
+          git fetch --tags
           if ! git rev-parse "$TAG" >/dev/null 2>&1; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag -a "$TAG" -m "Release $TAG"
             git push origin "$TAG"
+          else
+            echo "Tag $TAG already exists, skipping tag creation"
           fi
 
       - name: Create Release
