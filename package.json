@@ -7,9 +7,9 @@
   "scripts": {
     "lint": "oxlint --tsconfig tsconfig.json --type-aware src",
     "typecheck": "bun tsc --noEmit",
-    "build:windows-x64": "bun build --compile --minify --sourcemap --bytecode --target=bun-windows-x64-modern --define BUILD_VERSION='\"0.3\"' ./src/app.ts --outfile dist/generate-aws-inventory.exe && cd dist && zip generate-aws-inventory-windows-x64.zip generate-aws-inventory.exe",
-    "build:linux-x64": "bun build --compile --minify --sourcemap --bytecode --target=bun-linux-x64-modern --define BUILD_VERSION='\"0.3\"' ./src/app.ts --outfile dist/generate-aws-inventory && cd dist && zip generate-aws-inventory-linux-x64.zip generate-aws-inventory",
-    "build:macOS-arm": "bun build --compile --minify --sourcemap --bytecode --target=bun-darwin-x64 --define BUILD_VERSION='\"0.3\"' ./src/app.ts --outfile dist/generate-aws-inventory.app && cd dist && zip generate-aws-inventory-macos-arm.zip generate-aws-inventory.app",
+    "build:windows-x64": "bun build --compile --minify --sourcemap --bytecode --target=bun-windows-x64-modern --define BUILD_VERSION='\"'${BUILD_VERSION:-0.3}'\"' ./src/app.ts --outfile dist/generate-aws-inventory.exe && cd dist && zip generate-aws-inventory-windows-x64.zip generate-aws-inventory.exe",
+    "build:linux-x64": "bun build --compile --minify --sourcemap --bytecode --target=bun-linux-x64-modern --define BUILD_VERSION='\"'${BUILD_VERSION:-0.3}'\"' ./src/app.ts --outfile dist/generate-aws-inventory && cd dist && zip generate-aws-inventory-linux-x64.zip generate-aws-inventory",
+    "build:macOS-arm": "bun build --compile --minify --sourcemap --bytecode --target=bun-darwin-x64 --define BUILD_VERSION='\"'${BUILD_VERSION:-0.3}'\"' ./src/app.ts --outfile dist/generate-aws-inventory.app && cd dist && zip generate-aws-inventory-macos-arm.zip generate-aws-inventory.app",
     "build:all": "bun run build:windows-x64 && bun run build:linux-x64 && bun run build:macOS-arm",
     "format": "prettier --write ."
   },

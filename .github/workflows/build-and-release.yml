@@ -28,17 +28,27 @@ jobs:
       - name: Run type check
         run: bun run typecheck
 
+      - name: Get package version
+        id: package_version
+        run: echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
       - name: Create dist directory
         run: mkdir -p dist
 
       - name: Build for Windows x64
         run: bun run build:windows-x64
+        env:
+          BUILD_VERSION: ${{ steps.package_version.outputs.VERSION }}
 
       - name: Build for Linux x64
         run: bun run build:linux-x64
+        env:
+          BUILD_VERSION: ${{ steps.package_version.outputs.VERSION }}
 
       - name: Build for macOS ARM
         run: bun run build:macOS-arm
+        env:
+          BUILD_VERSION: ${{ steps.package_version.outputs.VERSION }}
 
       - name: Get tag name
         id: tag_name
@@ -50,7 +60,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NOT_GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
+          tag_name: ${{ steps.tag_name.outputs.TAG }}
           release_name: Release ${{ steps.tag_name.outputs.TAG }}
           draft: false
           prerelease: false
