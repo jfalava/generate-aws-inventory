@@ -29,7 +29,7 @@ Un generador de inventarios de AWS, escrito en Bun
 
 - **Solo Linux**: [libsecret](docs/libsecret-setup.md) (solo para MFA con letme)
 
-## Desarollo local
+## Desarrollo local
 
 Necesitas [Bun](https://bun.com) instalado en tu entorno.
 
